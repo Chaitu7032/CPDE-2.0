@@ -1,0 +1,33 @@
+{
+  "name": "cpde-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@turf/area": "^7.2.0",
+    "axios": "^1.5.0",
+    "leaflet": "^1.9.4",
+    "leaflet-draw": "^1.0.4",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-leaflet": "^4.2.1",
+    "react-leaflet-draw": "0.20.6",
+    "react-router-dom": "^7.13.1",
+    "recharts": "^2.5.0"
+  },
+  "devDependencies": {
+    "@types/leaflet": "^1.9.12",
+    "@types/leaflet-draw": "^1.0.9",
+    "@types/react": "^18.2.21",
+    "@vitejs/plugin-react": "^5.0.0",
+    "autoprefixer": "^10.4.14",
+    "postcss": "^8.4.32",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.1.6",
+    "vite": "^5.0.0"
+  }
+}
