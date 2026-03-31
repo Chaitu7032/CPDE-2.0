@@ -1,0 +1,106 @@
+ =========================
+# 🔥 Python Backend
+# =========================
+_pycache_/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+venv/
+env/
+.venv/
+ENV/
+
+# Python tools cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Logs
+*.log
+
+# Local databases
+*.sqlite3
+*.db
+
+# =========================
+# 🔐 Environment Variables
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# 🧠 ML / Data / Large Files
+# =========================
+*.pkl
+*.joblib
+*.h5
+*.onnx
+
+# Large datasets (Geo / Raster)
+*.tif
+*.tiff
+*.geotiff
+*.shp
+*.geojson
+*.gpkg
+
+# =========================
+# 🌍 GIS Temp Files
+# =========================
+*.aux.xml
+*.ovr
+*.cpg
+*.qpj
+*.prj
+
+# =========================
+# ⚡ Frontend (Vite / React)
+# =========================
+node_modules/
+dist/
+.vite/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# =========================
+# 🧪 Testing
+# =========================
+coverage/
+.nyc_output/
+
+# =========================
+# 💻 IDE / Editor
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =========================
+# 🖥 OS Files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# 🚀 Misc
+# =========================
+*.pid
+*.seed
+*.out
