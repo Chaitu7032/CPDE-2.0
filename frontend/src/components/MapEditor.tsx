@@ -8,6 +8,7 @@ import axios from 'axios'
 import type { AxiosError, AxiosResponse } from 'axios'
 import turfArea from '@turf/area'
 import { useNavigate } from 'react-router-dom'
+import FieldTechnicalDetails from './FieldTechnicalDetails'
 
 type RegisterLandResponse = { land_id: string }
 type GenerateGridsResponse = { count: number; grid_ids: string[] }
@@ -185,6 +186,8 @@ export default function MapEditor() {
             </div>
 
             <div className="mt-4 text-sm text-gray-700">Draw your field on the map, then press Register.</div>
+
+            <FieldTechnicalDetails geometry={polygonGeometry} />
 
             {error && (
               <div className="mt-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">

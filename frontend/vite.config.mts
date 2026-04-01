@@ -38,6 +38,10 @@ export default defineConfig({
         target: 'http://localhost:8000',
         changeOrigin: true,
       },
+      '/field': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
       '/process': {
         target: 'http://localhost:8000',
         changeOrigin: true,
