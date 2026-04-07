@@ -18,7 +18,7 @@ class GridRequest(BaseModel):
 
 class GridGenerateResponse(BaseModel):
     count: int
-    grid_ids: list[str]
+    grid_ids: list[int]
 
 
 @router.post("/generate")
@@ -41,20 +41,27 @@ async def get_grids(land_id: str):
     async with async_session() as session:
         res = await session.execute(
             text(
-                "SELECT grid_id, ST_AsGeoJSON(geom) as geojson FROM land_grid_cells WHERE land_id = :lid ORDER BY grid_id"
+                "SELECT grid_id, grid_num, row_idx, col_idx, ST_AsGeoJSON(geom) as geojson "
+                "FROM land_grid_cells WHERE land_id = :lid ORDER BY COALESCE(grid_num, 2147483647), grid_id"
             ),
             {"lid": lid},
         )
         rows = res.fetchall()
 
     features = []
-    for grid_id, geojson in rows:
+    for idx, (internal_grid_id, grid_num, row_idx, col_idx, geojson) in enumerate(rows, start=1):
+        resolved_grid_id = int(grid_num) if grid_num is not None else idx
         storage_geometry = json.loads(geojson)
         api_geometry = geometry_geojson_storage_to_api(storage_geometry)
         features.append(
             {
                 "type": "Feature",
-                "properties": {"grid_id": grid_id},
+                "properties": {
+                    "grid_id": resolved_grid_id,
+                    "row": row_idx,
+                    "col": col_idx,
+                    "internal_grid_key": str(internal_grid_id),
+                },
                 "geometry": api_geometry,
             }
         )

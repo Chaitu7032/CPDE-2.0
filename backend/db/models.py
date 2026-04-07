@@ -32,6 +32,9 @@ class LandGrid(Base):
 	id = Column(Integer, primary_key=True, autoincrement=True)
 	grid_id = Column(String(128), unique=True, index=True, nullable=False)
 	land_id = Column(Integer, nullable=False, index=True)
+	grid_num = Column(Integer, nullable=True, index=True)
+	row_idx = Column(Integer, nullable=True)
+	col_idx = Column(Integer, nullable=True)
 	# store geometry in canonical UTM processing CRS
 	geom = Column(Geometry(geometry_type="POLYGON", srid=32644), nullable=False)
 	centroid = Column(Geometry(geometry_type="POINT", srid=32644), nullable=True)

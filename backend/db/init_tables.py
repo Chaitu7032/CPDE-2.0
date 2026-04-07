@@ -48,6 +48,9 @@ async def create_tables():
         # Phase 2/3 grid helpers
         await conn.execute(text("ALTER TABLE IF EXISTS land_grid_cells ADD COLUMN IF NOT EXISTS centroid geometry(POINT, 32644)"))
         await conn.execute(text("ALTER TABLE IF EXISTS land_grid_cells ADD COLUMN IF NOT EXISTS is_water BOOLEAN"))
+        await conn.execute(text("ALTER TABLE IF EXISTS land_grid_cells ADD COLUMN IF NOT EXISTS grid_num INTEGER"))
+        await conn.execute(text("ALTER TABLE IF EXISTS land_grid_cells ADD COLUMN IF NOT EXISTS row_idx INTEGER"))
+        await conn.execute(text("ALTER TABLE IF EXISTS land_grid_cells ADD COLUMN IF NOT EXISTS col_idx INTEGER"))
 
         # Canonical CRS enforcement: all persisted geometries must be UTM 44N (EPSG:32644).
         await conn.execute(
@@ -82,11 +85,30 @@ async def create_tables():
 
         # Helpful indexes for sampling and timeseries
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_land_grid_cells_land_id ON land_grid_cells (land_id)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_land_grid_cells_land_grid_num ON land_grid_cells (land_id, grid_num)"))
+        await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_land_grid_cells_land_grid_num ON land_grid_cells (land_id, grid_num) WHERE grid_num IS NOT NULL"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_lands_geom_gist ON lands USING GIST (geom)"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_land_grid_cells_geom_gist ON land_grid_cells USING GIST (geom)"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_land_daily_indices_land_date ON land_daily_indices (land_id, date)"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_land_daily_lst_land_date ON land_daily_lst (land_id, date)"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_land_daily_weather_land_date ON land_daily_weather (land_id, date)"))
+
+        # Backfill missing numeric grid numbers for legacy rows to keep API output consistent.
+        await conn.execute(
+            text(
+                """
+                WITH ranked AS (
+                    SELECT id, ROW_NUMBER() OVER (PARTITION BY land_id ORDER BY grid_id) AS rn
+                    FROM land_grid_cells
+                    WHERE grid_num IS NULL
+                )
+                UPDATE land_grid_cells lg
+                SET grid_num = ranked.rn
+                FROM ranked
+                WHERE lg.id = ranked.id
+                """
+            )
+        )
 
         # Phase 5/6 climatology/anomaly keys
         # Older schemas used a uniqueness constraint that omitted land_id, which breaks multi-land usage

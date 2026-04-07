@@ -5,7 +5,7 @@ import 'leaflet/dist/leaflet.css'
 import axios from 'axios'
 import ScientificLegend from './ScientificLegend'
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line, Legend,
 } from 'recharts'
 
@@ -23,7 +23,10 @@ type DashboardData = {
     features: Array<{
       type: 'Feature'
       properties: {
-        grid_id: string
+        grid_id: number
+        internal_grid_key: string
+        row: number | null
+        col: number | null
         is_water: boolean
         ndvi: number | null
         ndmi: number | null
@@ -32,6 +35,11 @@ type DashboardData = {
         ndmi_norm: number | null
         lst_norm: number | null
         risk: number | null
+        color: {
+          ndvi: string
+          ndmi: string
+          lst: string
+        }
         anomalies: Record<string, { zscore: number | null; value: number | null }> | null
       }
       geometry: any
@@ -47,35 +55,15 @@ type DashboardData = {
   }
   weather: Array<{ date: string; t2m: number | null; rh2m: number | null; prectotcorr: number | null }>
   processing: { status: string; step: string | null; error: string | null }
+  color_scales?: {
+    ndvi: Array<{ range: string; label: string; color: string }>
+    ndmi: Array<{ range: string; label: string; color: string }>
+    lst: Array<{ range: string; label: string; color: string }>
+    no_data_color: string
+  }
 }
 
 type ColorMode = 'ndvi' | 'ndmi' | 'lst' | 'risk'
-
-function ndviColor(v: number | null): string {
-  if (v === null) return '#808080'
-  // Green (high NDVI) to Red (low NDVI)
-  const t = Math.max(0, Math.min(1, (v + 0.2) / 1.0))
-  const r = Math.round(255 * (1 - t))
-  const g = Math.round(200 * t)
-  return `rgb(${r},${g},50)`
-}
-
-function ndmiColor(v: number | null): string {
-  if (v === null) return '#808080'
-  const t = Math.max(0, Math.min(1, (v + 0.3) / 0.9))
-  const r = Math.round(200 * (1 - t))
-  const b = Math.round(220 * t)
-  return `rgb(${r},80,${b})`
-}
-
-function lstColor(v: number | null): string {
-  if (v === null) return '#808080'
-  // Blue (cool) to Red (hot), range ~10-50°C
-  const t = Math.max(0, Math.min(1, (v - 10) / 40))
-  const r = Math.round(255 * t)
-  const b = Math.round(255 * (1 - t))
-  return `rgb(${r},50,${b})`
-}
 
 function riskColor(v: number | null): string {
   if (v === null) return '#808080'
@@ -93,6 +81,8 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null)
   const [colorMode, setColorMode] = useState<ColorMode>('ndvi')
   const [pollCount, setPollCount] = useState(0)
+  const [hoveredGridId, setHoveredGridId] = useState<number | null>(null)
+  const [selectedGridId, setSelectedGridId] = useState<number | null>(null)
 
   const fetchDashboard = useCallback(async () => {
     try {
@@ -137,31 +127,58 @@ export default function Dashboard() {
 
   const getGridStyle = useCallback((feature: any) => {
     const props = feature?.properties
-    if (!props) return { weight: 1, fillOpacity: 0.3, color: '#666', fillColor: '#808080' }
+    if (!props) return { weight: 1, fillOpacity: 0.68, color: '#333', fillColor: '#808080' }
 
-    if (props.is_water) return { weight: 1, fillOpacity: 0.5, color: '#3388ff', fillColor: '#3388ff' }
+    const gridId = Number(props.grid_id)
+    const isHovered = Number.isFinite(gridId) && hoveredGridId === gridId
+    const isSelected = Number.isFinite(gridId) && selectedGridId === gridId
 
-    let fillColor = '#808080'
-    if (colorMode === 'ndvi') fillColor = ndviColor(props.ndvi)
-    else if (colorMode === 'ndmi') fillColor = ndmiColor(props.ndmi)
-    else if (colorMode === 'lst') fillColor = lstColor(props.lst_c)
-    else if (colorMode === 'risk') fillColor = riskColor(props.risk)
+    if (props.is_water) return { weight: 1, fillOpacity: 0.68, color: '#333', fillColor: '#3388ff' }
 
-    return { weight: 1, fillOpacity: 0.65, color: '#333', fillColor }
-  }, [colorMode])
+    const backendColor = colorMode === 'ndvi'
+      ? props.color?.ndvi
+      : colorMode === 'ndmi'
+        ? props.color?.ndmi
+        : colorMode === 'lst'
+          ? props.color?.lst
+          : null
+
+    const fillColor = backendColor || (colorMode === 'risk' ? riskColor(props.risk) : '#808080')
+
+    if (isHovered) {
+      return { weight: 2.5, fillOpacity: 0.8, color: '#333', fillColor }
+    }
+    if (isSelected) {
+      return { weight: 2.5, fillOpacity: 0.78, color: '#333', fillColor }
+    }
+
+    return { weight: 1, fillOpacity: 0.68, color: '#333', fillColor }
+  }, [colorMode, hoveredGridId, selectedGridId])
 
   const gridChartData = useMemo(() => {
     if (!data?.grids?.features) return []
     return data.grids.features
       .filter(f => !f.properties.is_water)
-      .map((f, i) => ({
-        idx: i + 1,
+      .map((f) => ({
+        grid_id: Number(f.properties.grid_id),
+        row: f.properties.row,
+        col: f.properties.col,
         ndvi: f.properties.ndvi != null ? +f.properties.ndvi.toFixed(3) : null,
         ndmi: f.properties.ndmi != null ? +f.properties.ndmi.toFixed(3) : null,
         lst: f.properties.lst_c != null ? +f.properties.lst_c.toFixed(1) : null,
         risk: f.properties.risk != null ? +f.properties.risk.toFixed(3) : null,
+        colors: f.properties.color,
       }))
+      .sort((a, b) => a.grid_id - b.grid_id)
   }, [data])
+
+  const activeMetricKey = colorMode === 'lst' ? 'lst' : colorMode
+  const barBaseColor = colorMode === 'ndvi' ? '#16a34a' : colorMode === 'ndmi' ? '#2563eb' : colorMode === 'lst' ? '#dc2626' : '#f59e0b'
+  const chartWidth = useMemo(() => Math.max(700, gridChartData.length * 24), [gridChartData.length])
+  const xTickInterval = useMemo(() => {
+    if (gridChartData.length <= 24) return 0
+    return Math.floor(gridChartData.length / 24)
+  }, [gridChartData.length])
 
   if (loading) {
     return (
@@ -280,8 +297,19 @@ export default function Dashboard() {
                     onEachFeature={(feature, layer) => {
                       const p = feature.properties
                       if (!p) return
+                      const gridId = Number(p.grid_id)
+                      if (Number.isFinite(gridId)) {
+                        layer.on({
+                          mouseover: () => setHoveredGridId(gridId),
+                          mouseout: () => {
+                            setHoveredGridId(current => (current === gridId ? null : current))
+                          },
+                          click: () => setSelectedGridId(gridId),
+                        })
+                      }
                       const lines = [
-                        `Grid: ${p.grid_id?.slice(0, 8)}...`,
+                        `Grid: ${p.grid_id}`,
+                        p.row != null && p.col != null ? `Row/Col: ${p.row}, ${p.col}` : '',
                         p.is_water ? 'Water' : '',
                         p.ndvi != null ? `NDVI: ${p.ndvi.toFixed(3)}` : '',
                         p.ndmi != null ? `NDMI: ${p.ndmi.toFixed(3)}` : '',
@@ -302,6 +330,7 @@ export default function Dashboard() {
             ndmi={summary.ndmi?.mean ?? null}
             lst={summary.lst?.mean ?? null}
             risk={summary.risk?.mean ?? null}
+            colorScales={data.color_scales}
           />
         </div>
 
@@ -313,18 +342,76 @@ export default function Dashboard() {
               <div className="text-sm font-semibold mb-2">
                 Per-Grid {colorMode.toUpperCase()}
               </div>
-              <ResponsiveContainer width="100%" height={200}>
-                <BarChart data={gridChartData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="idx" tick={{ fontSize: 10 }} />
-                  <YAxis tick={{ fontSize: 10 }} />
-                  <Tooltip />
-                  <Bar
-                    dataKey={colorMode === 'lst' ? 'lst' : colorMode}
-                    fill={colorMode === 'ndvi' ? '#22c55e' : colorMode === 'ndmi' ? '#3b82f6' : colorMode === 'lst' ? '#ef4444' : '#f59e0b'}
-                  />
-                </BarChart>
-              </ResponsiveContainer>
+              <div className="mb-2 text-xs text-gray-600">
+                {selectedGridId != null ? `Selected grid: ${selectedGridId}` : 'Click a grid or bar to lock selection'}
+              </div>
+              <div className="overflow-x-auto">
+                <div style={{ width: chartWidth, height: 220 }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={gridChartData}
+                      margin={{ top: 8, right: 8, left: 0, bottom: 40 }}
+                      onMouseMove={(state: any) => {
+                        const gid = state?.activePayload?.[0]?.payload?.grid_id
+                        if (typeof gid === 'number' && Number.isFinite(gid)) {
+                          setHoveredGridId(gid)
+                        }
+                      }}
+                      onMouseLeave={() => setHoveredGridId(null)}
+                      onClick={(state: any) => {
+                        const gid = state?.activePayload?.[0]?.payload?.grid_id
+                        if (typeof gid === 'number' && Number.isFinite(gid)) {
+                          setSelectedGridId(gid)
+                        }
+                      }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis
+                        dataKey="grid_id"
+                        tick={{ fontSize: 10 }}
+                        interval={xTickInterval}
+                        angle={-35}
+                        textAnchor="end"
+                        height={52}
+                      />
+                      <YAxis tick={{ fontSize: 10 }} />
+                      <Tooltip
+                        formatter={(value: number | null, _name: string, payload: any) => {
+                          if (value == null) return ['–', activeMetricKey.toUpperCase()]
+                          const row = payload?.payload?.row
+                          const col = payload?.payload?.col
+                          const meta = row != null && col != null ? ` (row ${row}, col ${col})` : ''
+                          return [value, `${activeMetricKey.toUpperCase()}${meta}`]
+                        }}
+                        labelFormatter={(label) => `Grid ${label}`}
+                      />
+                      <Bar dataKey={activeMetricKey}>
+                        {gridChartData.map((entry) => {
+                          const isHovered = entry.grid_id === hoveredGridId
+                          const isSelected = entry.grid_id === selectedGridId
+                          const metricColor = colorMode === 'ndvi'
+                            ? entry.colors?.ndvi
+                            : colorMode === 'ndmi'
+                              ? entry.colors?.ndmi
+                              : colorMode === 'lst'
+                                ? entry.colors?.lst
+                                : null
+                          const fill = isSelected ? '#111827' : isHovered ? '#1f2937' : (metricColor || barBaseColor)
+                          return (
+                            <Cell
+                              key={`grid-${entry.grid_id}`}
+                              fill={fill}
+                              fillOpacity={isSelected || isHovered ? 1 : 0.78}
+                              stroke={isSelected ? '#000000' : 'none'}
+                              strokeWidth={isSelected ? 1 : 0}
+                            />
+                          )
+                        })}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
             </div>
           )}
 

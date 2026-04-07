@@ -11,7 +11,7 @@ import { useNavigate } from 'react-router-dom'
 import FieldTechnicalDetails from './FieldTechnicalDetails'
 
 type RegisterLandResponse = { land_id: string }
-type GenerateGridsResponse = { count: number; grid_ids: string[] }
+type GenerateGridsResponse = { count: number; grid_ids: number[] }
 
 type FeatureCollection = {
   type: 'FeatureCollection'

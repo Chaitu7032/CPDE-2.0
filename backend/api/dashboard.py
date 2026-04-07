@@ -85,6 +85,66 @@ async def _get_status(land_id: int) -> dict:
 # HELPERS
 # ══════════════════════════════════════════════════════════════════════════
 
+NO_DATA_COLOR = "#808080"
+
+# Scientifically defined color scales for crop-stress interpretation.
+NDVI_COLOR_SCALE = [
+    {"range": "< 0.2", "label": "Severe stress", "color": "#7f1d1d"},
+    {"range": "0.2 - 0.4", "label": "Stressed", "color": "#f97316"},
+    {"range": "0.4 - 0.6", "label": "Moderate", "color": "#facc15"},
+    {"range": ">= 0.6", "label": "Healthy", "color": "#16a34a"},
+]
+
+NDMI_COLOR_SCALE = [
+    {"range": "< -0.1", "label": "Dry", "color": "#dc2626"},
+    {"range": "-0.1 - 0", "label": "Slightly dry", "color": "#f59e0b"},
+    {"range": "0 - 0.2", "label": "Moderate", "color": "#7dd3fc"},
+    {"range": ">= 0.2", "label": "Wet", "color": "#2563eb"},
+]
+
+LST_COLOR_SCALE = [
+    {"range": "< 25", "label": "Cool", "color": "#2563eb"},
+    {"range": "25 - 30", "label": "Normal", "color": "#16a34a"},
+    {"range": "30 - 35", "label": "Warm", "color": "#f59e0b"},
+    {"range": ">= 35", "label": "Hot stress", "color": "#dc2626"},
+]
+
+
+def _ndvi_color(v: float | None) -> str:
+    if v is None:
+        return NO_DATA_COLOR
+    if v < 0.2:
+        return "#7f1d1d"
+    if v < 0.4:
+        return "#f97316"
+    if v < 0.6:
+        return "#facc15"
+    return "#16a34a"
+
+
+def _ndmi_color(v: float | None) -> str:
+    if v is None:
+        return NO_DATA_COLOR
+    if v < -0.1:
+        return "#dc2626"
+    if v < 0.0:
+        return "#f59e0b"
+    if v < 0.2:
+        return "#7dd3fc"
+    return "#2563eb"
+
+
+def _lst_color(v: float | None) -> str:
+    if v is None:
+        return NO_DATA_COLOR
+    if v < 25.0:
+        return "#2563eb"
+    if v < 30.0:
+        return "#16a34a"
+    if v < 35.0:
+        return "#f59e0b"
+    return "#dc2626"
+
 def _safe_s2_date(s2: dict, fallback: str) -> str:
     """
     Extract YYYY-MM-DD from s2['datetime'].
@@ -333,8 +393,9 @@ async def get_dashboard(land_id: int):
         # ── Grids ──────────────────────────────────────────────────────────
         grids_res = await session.execute(
             text(
-                "SELECT grid_id, ST_AsGeoJSON(geom) as geojson, COALESCE(is_water, FALSE) as is_water "
-                "FROM land_grid_cells WHERE land_id = :lid ORDER BY grid_id"
+                "SELECT grid_id, grid_num, row_idx, col_idx, ST_AsGeoJSON(geom) as geojson, COALESCE(is_water, FALSE) as is_water "
+                "FROM land_grid_cells WHERE land_id = :lid "
+                "ORDER BY COALESCE(grid_num, 2147483647), grid_id"
             ),
             {"lid": land_id},
         )
@@ -418,13 +479,14 @@ async def get_dashboard(land_id: int):
 
     # ── Build GeoJSON FeatureCollection ───────────────────────────────────
     features = []
-    for grid_id, geojson_str, is_water in grid_rows:
-        gid      = str(grid_id)
+    for idx, (internal_grid_id, grid_num, row_idx, col_idx, geojson_str, is_water) in enumerate(grid_rows, start=1):
+        internal_gid = str(internal_grid_id)
+        public_grid_id = int(grid_num) if grid_num is not None else idx
         grid_geometry = geometry_geojson_storage_to_api(json.loads(geojson_str))
-        idx_data = idx_by_grid.get(gid, {})
-        lst_data = lst_by_grid.get(gid, {})
-        risk_data = risk_by_grid.get(gid, {})
-        anom_data = anom_by_grid.get(gid, {})
+        idx_data = idx_by_grid.get(internal_gid, {})
+        lst_data = lst_by_grid.get(internal_gid, {})
+        risk_data = risk_by_grid.get(internal_gid, {})
+        anom_data = anom_by_grid.get(internal_gid, {})
 
         ndvi = idx_data.get("ndvi")
         ndvi_norm = max(0.0, min(1.0, (ndvi + 1.0) / 2.0)) if ndvi is not None else None
@@ -438,7 +500,10 @@ async def get_dashboard(land_id: int):
         risk_prob = risk_data.get("probability")
 
         props = {
-            "grid_id":   gid,
+            "grid_id":   public_grid_id,
+            "internal_grid_key": internal_gid,
+            "row":       row_idx,
+            "col":       col_idx,
             "is_water":  bool(is_water),
             "ndvi":      ndvi,
             "ndmi":      ndmi,
@@ -447,6 +512,11 @@ async def get_dashboard(land_id: int):
             "ndmi_norm": ndmi_norm,
             "lst_norm":  lst_norm,
             "risk":      risk_prob,
+            "color": {
+                "ndvi": _ndvi_color(ndvi),
+                "ndmi": _ndmi_color(ndmi),
+                "lst": _lst_color(lst_c),
+            },
             "anomalies": anom_data if anom_data else None,
         }
         features.append({
@@ -508,6 +578,12 @@ async def get_dashboard(land_id: int):
             "ndmi":  _stats(ndmi_vals),
             "lst":   lst_stats,
             "risk":  _stats(risk_vals),
+        },
+        "color_scales": {
+            "ndvi": NDVI_COLOR_SCALE,
+            "ndmi": NDMI_COLOR_SCALE,
+            "lst": LST_COLOR_SCALE,
+            "no_data_color": NO_DATA_COLOR,
         },
         "weather":    weather_ts,
         "processing": processing,
