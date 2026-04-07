@@ -40,14 +40,45 @@ async def create_tables():
         await conn.execute(text("ALTER TABLE IF EXISTS lands ADD COLUMN IF NOT EXISTS crop_type VARCHAR(64)"))
 
         # Phase 1/2 cached geometry + CRS metadata
-        await conn.execute(text("ALTER TABLE IF EXISTS lands ADD COLUMN IF NOT EXISTS centroid geometry(POINT, 4326)"))
+        await conn.execute(text("ALTER TABLE IF EXISTS lands ADD COLUMN IF NOT EXISTS centroid geometry(POINT, 32644)"))
         await conn.execute(text("ALTER TABLE IF EXISTS lands ADD COLUMN IF NOT EXISTS utm_epsg INTEGER"))
         await conn.execute(text("ALTER TABLE IF EXISTS lands ADD COLUMN IF NOT EXISTS area_sqm DOUBLE PRECISION"))
         await conn.execute(text("ALTER TABLE IF EXISTS lands ADD COLUMN IF NOT EXISTS created_at TIMESTAMP"))
 
         # Phase 2/3 grid helpers
-        await conn.execute(text("ALTER TABLE IF EXISTS land_grid_cells ADD COLUMN IF NOT EXISTS centroid geometry(POINT, 4326)"))
+        await conn.execute(text("ALTER TABLE IF EXISTS land_grid_cells ADD COLUMN IF NOT EXISTS centroid geometry(POINT, 32644)"))
         await conn.execute(text("ALTER TABLE IF EXISTS land_grid_cells ADD COLUMN IF NOT EXISTS is_water BOOLEAN"))
+
+        # Canonical CRS enforcement: all persisted geometries must be UTM 44N (EPSG:32644).
+        await conn.execute(
+            text(
+                "ALTER TABLE IF EXISTS lands "
+                "ALTER COLUMN geom TYPE geometry(POLYGON, 32644) "
+                "USING ST_Transform(geom, 32644)"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE IF EXISTS lands "
+                "ALTER COLUMN centroid TYPE geometry(POINT, 32644) "
+                "USING CASE WHEN centroid IS NULL THEN NULL ELSE ST_Transform(centroid, 32644) END"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE IF EXISTS land_grid_cells "
+                "ALTER COLUMN geom TYPE geometry(POLYGON, 32644) "
+                "USING ST_Transform(geom, 32644)"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE IF EXISTS land_grid_cells "
+                "ALTER COLUMN centroid TYPE geometry(POINT, 32644) "
+                "USING CASE WHEN centroid IS NULL THEN NULL ELSE ST_Transform(centroid, 32644) END"
+            )
+        )
+        await conn.execute(text("UPDATE lands SET utm_epsg = 32644 WHERE utm_epsg IS DISTINCT FROM 32644"))
 
         # Helpful indexes for sampling and timeseries
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_land_grid_cells_land_id ON land_grid_cells (land_id)"))

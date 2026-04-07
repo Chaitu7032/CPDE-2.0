@@ -22,6 +22,7 @@ from backend.pipelines.sentinel2 import process_sentinel2_for_land_day
 from backend.pipelines.modis import process_modis_for_land_day
 from backend.pipelines.nasa_power import process_weather_for_land
 from backend.pipelines.grid_generation import generate_and_store_grids
+from backend.utils.crs import geometry_geojson_storage_to_api
 
 from backend.db.connection import async_session
 from sqlalchemy import text
@@ -324,7 +325,7 @@ async def get_dashboard(land_id: int):
             "land_id":      land_row[0],
             "farmer_name":  land_row[1],
             "crop_type":    land_row[2],
-            "geometry":     json.loads(land_row[3]) if land_row[3] else None,
+            "geometry":     geometry_geojson_storage_to_api(json.loads(land_row[3])) if land_row[3] else None,
             "area_sqm":     land_row[4],
             "created_at":   str(land_row[5]) if land_row[5] else None,
         }
@@ -419,6 +420,7 @@ async def get_dashboard(land_id: int):
     features = []
     for grid_id, geojson_str, is_water in grid_rows:
         gid      = str(grid_id)
+        grid_geometry = geometry_geojson_storage_to_api(json.loads(geojson_str))
         idx_data = idx_by_grid.get(gid, {})
         lst_data = lst_by_grid.get(gid, {})
         risk_data = risk_by_grid.get(gid, {})
@@ -450,7 +452,7 @@ async def get_dashboard(land_id: int):
         features.append({
             "type":       "Feature",
             "properties": props,
-            "geometry":   json.loads(geojson_str),
+            "geometry":   grid_geometry,
         })
 
     grids_fc = {"type": "FeatureCollection", "features": features}

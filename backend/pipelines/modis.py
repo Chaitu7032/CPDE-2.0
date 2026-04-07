@@ -14,6 +14,7 @@ from shapely.prepared import prep
 from sqlalchemy import text
 
 from backend.db.connection import async_session
+from backend.utils.crs import STORAGE_CRS_EPSG
 
 
 PC_STAC_API = "https://planetarycomputer.microsoft.com/api/stac/v1"
@@ -25,12 +26,6 @@ DEFAULT_MODIS_STAC_COLLECTION = "modis-11A1-061"
 # Keep these for backwards-compatibility in API responses/logs.
 DEFAULT_MODIS_LST_SHORT_NAME = "MOD11A1"
 DEFAULT_MODIS_LST_VERSION = "061"
-
-
-def _lonlat_to_utm_epsg(lon: float, lat: float) -> int:
-    zone = int((lon + 180) / 6) + 1
-    return (32600 + zone) if lat >= 0 else (32700 + zone)
-
 
 def _parse_valid_range_tag(tag_val: str | None) -> tuple[int | None, int | None]:
     if not tag_val:
@@ -213,7 +208,10 @@ async def process_modis_for_land_day(land_id, date: str, collection_concept_id: 
     async with async_session() as session:
         land_res = await session.execute(
             text(
-                "SELECT ST_X(COALESCE(centroid, ST_Centroid(geom))) AS lon, ST_Y(COALESCE(centroid, ST_Centroid(geom))) AS lat, utm_epsg "
+                "SELECT "
+                "ST_X(ST_Transform(COALESCE(centroid, ST_Centroid(geom)), 4326)) AS lon, "
+                "ST_Y(ST_Transform(COALESCE(centroid, ST_Centroid(geom)), 4326)) AS lat, "
+                "utm_epsg "
                 "FROM lands WHERE land_id = :lid"
             ),
             {"lid": land_id},
@@ -221,15 +219,17 @@ async def process_modis_for_land_day(land_id, date: str, collection_concept_id: 
         land_row = land_res.first()
         if not land_row:
             return {"processed": 0, "reason": "land not found"}
-        land_lon, land_lat, utm_epsg = float(land_row[0]), float(land_row[1]), land_row[2]
+        _land_lon, _land_lat, utm_epsg = float(land_row[0]), float(land_row[1]), land_row[2]
 
         if not utm_epsg:
-            utm_epsg = _lonlat_to_utm_epsg(land_lon, land_lat)
+            utm_epsg = int(STORAGE_CRS_EPSG)
             await session.execute(text("UPDATE lands SET utm_epsg = :epsg WHERE land_id = :lid"), {"epsg": int(utm_epsg), "lid": land_id})
 
         grids_res = await session.execute(
             text(
-                "SELECT grid_id, ST_X(COALESCE(centroid, ST_Centroid(geom))) AS lon, ST_Y(COALESCE(centroid, ST_Centroid(geom))) AS lat "
+                "SELECT grid_id, "
+                "ST_X(ST_Transform(COALESCE(centroid, ST_Centroid(geom)), 4326)) AS lon, "
+                "ST_Y(ST_Transform(COALESCE(centroid, ST_Centroid(geom)), 4326)) AS lat "
                 "FROM land_grid_cells WHERE land_id = :lid AND COALESCE(is_water, FALSE) = FALSE ORDER BY grid_id"
             ),
             {"lid": land_id},
@@ -239,7 +239,7 @@ async def process_modis_for_land_day(land_id, date: str, collection_concept_id: 
         bbox_res = await session.execute(
             text(
                 "SELECT ST_XMin(ext) AS minx, ST_YMin(ext) AS miny, ST_XMax(ext) AS maxx, ST_YMax(ext) AS maxy "
-                "FROM (SELECT ST_Extent(geom) AS ext FROM land_grid_cells WHERE land_id = :lid) q"
+                "FROM (SELECT ST_Extent(ST_Transform(geom, 4326)) AS ext FROM land_grid_cells WHERE land_id = :lid) q"
             ),
             {"lid": land_id},
         )
@@ -266,7 +266,7 @@ async def process_modis_for_land_day(land_id, date: str, collection_concept_id: 
     # Fetch land geometry for STAC intersects query
     async with async_session() as session:
         land_geom_res = await session.execute(
-            text("SELECT ST_AsGeoJSON(geom) FROM lands WHERE land_id = :lid"),
+            text("SELECT ST_AsGeoJSON(ST_Transform(geom, 4326)) FROM lands WHERE land_id = :lid"),
             {"lid": land_id},
         )
         land_geom_row = land_geom_res.first()

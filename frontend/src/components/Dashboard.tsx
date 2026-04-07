@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom'
 import { GeoJSON, MapContainer, TileLayer } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
 import axios from 'axios'
+import ScientificLegend from './ScientificLegend'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line, Legend,
@@ -295,6 +296,13 @@ export default function Dashboard() {
               </MapContainer>
             </div>
           </div>
+
+          <ScientificLegend
+            ndvi={summary.ndvi?.mean ?? null}
+            ndmi={summary.ndmi?.mean ?? null}
+            lst={summary.lst?.mean ?? null}
+            risk={summary.risk?.mean ?? null}
+          />
         </div>
 
         {/* Side panel: charts */}

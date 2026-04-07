@@ -6,14 +6,14 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from pyproj import Geod
-from shapely.geometry import MultiPolygon, Polygon, shape
+from shapely.geometry import MultiPolygon, Polygon, mapping, shape
 from shapely.ops import unary_union
 from shapely.validation import explain_validity
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from backend.db.connection import async_session
+from backend.utils.crs import STORAGE_CRS_EPSG, geometry_geojson_storage_to_api, shapely_wgs84_to_storage
 router = APIRouter(prefix="/lands", tags=["lands"])
 
 
@@ -31,11 +31,6 @@ class LandCreateResponse(BaseModel):
     land_id: str
     utm_epsg: int | None = None
     area_sqm: float | None = None
-
-
-def _lonlat_to_utm_epsg(lon: float, lat: float) -> int:
-    zone = int((lon + 180) / 6) + 1
-    return (32600 + zone) if lat >= 0 else (32700 + zone)
 
 
 def _validate_polygon_coords(coords: list) -> None:
@@ -99,21 +94,19 @@ async def register_land(payload: LandCreate):
         reason = explain_validity(geom)
         raise HTTPException(status_code=400, detail=f"Invalid polygon: {reason}")
 
-    # Geodesic area in square meters (WGS84)
-    geod = Geod(ellps="WGS84")
     try:
-        area_sqm, _perim = geod.geometry_area_perimeter(geom)
-        area_sqm = float(abs(area_sqm))
-    except Exception:
-        area_sqm = None
+        geom_utm = shapely_wgs84_to_storage(geom)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"CRS transform failed: {e}")
 
-    # Cache centroid + UTM EPSG for later phases (grid + sampling)
-    rp = geom.representative_point()
-    utm_epsg = _lonlat_to_utm_epsg(rp.x, rp.y)
-    centroid_lon = float(rp.x)
-    centroid_lat = float(rp.y)
+    if geom_utm.is_empty:
+        raise HTTPException(status_code=400, detail="Geometry became empty after CRS transformation")
 
-    geojson_str = json.dumps(payload.geometry)
+    area_sqm = float(abs(geom_utm.area))
+    rp_utm = geom_utm.representative_point()
+    utm_epsg = STORAGE_CRS_EPSG
+
+    geojson_str = json.dumps(mapping(geom_utm))
 
     async with async_session() as session:
         try:
@@ -124,8 +117,8 @@ async def register_land(payload: LandCreate):
                     text(
                         "INSERT INTO lands (farmer_name, crop_type, geom, centroid, utm_epsg, area_sqm, created_at) "
                         "VALUES (:farmer_name, :crop_type, "
-                        "  ST_SetSRID(ST_GeomFromGeoJSON(:geojson), 4326), "
-                        "  ST_SetSRID(ST_Point(:lon, :lat), 4326), "
+                        "  ST_SetSRID(ST_GeomFromGeoJSON(:geojson), :srid), "
+                        "  ST_SetSRID(ST_Point(:x, :y), :srid), "
                         "  :utm_epsg, :area_sqm, :created_at "
                         ") RETURNING land_id"
                     ),
@@ -133,8 +126,9 @@ async def register_land(payload: LandCreate):
                         "farmer_name": farmer_name,
                         "crop_type": payload.crop_type,
                         "geojson": geojson_str,
-                        "lon": centroid_lon,
-                        "lat": centroid_lat,
+                        "x": float(rp_utm.x),
+                        "y": float(rp_utm.y),
+                        "srid": int(STORAGE_CRS_EPSG),
                         "utm_epsg": int(utm_epsg),
                         "area_sqm": area_sqm,
                         "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
@@ -147,8 +141,8 @@ async def register_land(payload: LandCreate):
                     text(
                         "INSERT INTO lands (farmer_name, crop_type, geom, centroid, utm_epsg) "
                         "VALUES (:farmer_name, :crop_type, "
-                        "  ST_SetSRID(ST_GeomFromGeoJSON(:geojson), 4326), "
-                        "  ST_SetSRID(ST_Point(:lon, :lat), 4326), "
+                        "  ST_SetSRID(ST_GeomFromGeoJSON(:geojson), :srid), "
+                        "  ST_SetSRID(ST_Point(:x, :y), :srid), "
                         "  :utm_epsg "
                         ") RETURNING land_id"
                     ),
@@ -156,8 +150,9 @@ async def register_land(payload: LandCreate):
                         "farmer_name": farmer_name,
                         "crop_type": payload.crop_type,
                         "geojson": geojson_str,
-                        "lon": centroid_lon,
-                        "lat": centroid_lat,
+                        "x": float(rp_utm.x),
+                        "y": float(rp_utm.y),
+                        "srid": int(STORAGE_CRS_EPSG),
                         "utm_epsg": int(utm_epsg),
                     },
                 )
@@ -187,10 +182,13 @@ async def get_land(land_id: str):
         if not row:
             raise HTTPException(status_code=404, detail="land not found")
 
+    geometry_storage = json.loads(row[3]) if row[3] else None
+    geometry_wgs84 = geometry_geojson_storage_to_api(geometry_storage) if geometry_storage else None
+
     return {
         "land_id": str(row[0]),
         "farmer_name": row[1],
         "crop_type": row[2],
-        "geometry": json.loads(row[3]) if row[3] else None,
+        "geometry": geometry_wgs84,
         "area_sqm": row[4],
     }

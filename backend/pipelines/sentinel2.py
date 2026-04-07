@@ -162,7 +162,7 @@ async def process_sentinel2_for_land_day(land_id, date: str) -> dict:
     # Fetch land geometry for STAC intersects query
     async with async_session() as session:
         land_res = await session.execute(
-            text("SELECT ST_AsGeoJSON(geom) FROM lands WHERE land_id = :lid"),
+            text("SELECT ST_AsGeoJSON(ST_Transform(geom, 4326)) FROM lands WHERE land_id = :lid"),
             {"lid": land_id},
         )
         land_row = land_res.first()
@@ -171,7 +171,9 @@ async def process_sentinel2_for_land_day(land_id, date: str) -> dict:
 
         grids_res = await session.execute(
             text(
-                "SELECT grid_id, ST_X(COALESCE(centroid, ST_Centroid(geom))) AS lon, ST_Y(COALESCE(centroid, ST_Centroid(geom))) AS lat "
+                "SELECT grid_id, "
+                "ST_X(ST_Transform(COALESCE(centroid, ST_Centroid(geom)), 4326)) AS lon, "
+                "ST_Y(ST_Transform(COALESCE(centroid, ST_Centroid(geom)), 4326)) AS lat "
                 "FROM land_grid_cells WHERE land_id = :lid ORDER BY grid_id"
             ),
             {"lid": land_id},

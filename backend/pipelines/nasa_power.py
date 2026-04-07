@@ -71,7 +71,12 @@ async def process_weather_for_land(land_id, start_date: str, end_date: str) -> d
     # fetch land centroid
     async with async_session() as session:
         res = await session.execute(
-            text("SELECT ST_X(COALESCE(centroid, ST_Centroid(geom))) as lon, ST_Y(COALESCE(centroid, ST_Centroid(geom))) as lat FROM lands WHERE land_id = :lid"),
+            text(
+                "SELECT "
+                "ST_X(ST_Transform(COALESCE(centroid, ST_Centroid(geom)), 4326)) as lon, "
+                "ST_Y(ST_Transform(COALESCE(centroid, ST_Centroid(geom)), 4326)) as lat "
+                "FROM lands WHERE land_id = :lid"
+            ),
             {"lid": land_id},
         )
         row = res.first()

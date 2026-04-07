@@ -15,6 +15,7 @@ from backend.api.weather import router as weather_router
 from backend.api.anomalies import router as anomalies_router
 from backend.api.forecast import router as forecast_router
 from backend.api.dashboard import router as dashboard_router
+from backend.api.field_technical_details import router as field_technical_details_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -91,3 +92,4 @@ app.include_router(weather_router)
 app.include_router(anomalies_router)
 app.include_router(forecast_router)
 app.include_router(dashboard_router)
+app.include_router(field_technical_details_router)

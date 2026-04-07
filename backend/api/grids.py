@@ -1,10 +1,12 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+import json
 
 from sqlalchemy import text
 
 from backend.pipelines.grid_generation import generate_and_store_grids
 from backend.db.connection import async_session
+from backend.utils.crs import geometry_geojson_storage_to_api
 
 router = APIRouter(prefix="/grids", tags=["grids"])
 
@@ -47,11 +49,13 @@ async def get_grids(land_id: str):
 
     features = []
     for grid_id, geojson in rows:
+        storage_geometry = json.loads(geojson)
+        api_geometry = geometry_geojson_storage_to_api(storage_geometry)
         features.append(
             {
                 "type": "Feature",
                 "properties": {"grid_id": grid_id},
-                "geometry": __import__("json").loads(geojson),
+                "geometry": api_geometry,
             }
         )
 

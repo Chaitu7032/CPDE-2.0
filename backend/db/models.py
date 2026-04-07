@@ -15,11 +15,11 @@ class Land(Base):
 	land_id = Column(Integer, primary_key=True, autoincrement=True)
 	farmer_name = Column(String, nullable=False)
 	crop_type = Column(String(64), nullable=True)
-	# geometry stored in PostGIS (SRID 4326, POLYGON)
-	geom = Column(Geometry(geometry_type="POLYGON", srid=4326), nullable=False)
-	# cached centroid for point-based queries (weather, UTM selection)
-	centroid = Column(Geometry(geometry_type="POINT", srid=4326), nullable=True)
-	# cached UTM EPSG for this land (Phase 2+)
+	# geometry stored in PostGIS in the canonical processing CRS (UTM zone 44N)
+	geom = Column(Geometry(geometry_type="POLYGON", srid=32644), nullable=False)
+	# centroid stored in the same canonical CRS as geom
+	centroid = Column(Geometry(geometry_type="POINT", srid=32644), nullable=True)
+	# cached CRS marker for downstream pipelines
 	utm_epsg = Column(Integer, nullable=True)
 	# optional metadata
 	area_sqm = Column(Float, nullable=True)
@@ -32,9 +32,9 @@ class LandGrid(Base):
 	id = Column(Integer, primary_key=True, autoincrement=True)
 	grid_id = Column(String(128), unique=True, index=True, nullable=False)
 	land_id = Column(Integer, nullable=False, index=True)
-	# store geometry in WGS84 so all stored geometries are consistent
-	geom = Column(Geometry(geometry_type="POLYGON", srid=4326), nullable=False)
-	centroid = Column(Geometry(geometry_type="POINT", srid=4326), nullable=True)
+	# store geometry in canonical UTM processing CRS
+	geom = Column(Geometry(geometry_type="POLYGON", srid=32644), nullable=False)
+	centroid = Column(Geometry(geometry_type="POINT", srid=32644), nullable=True)
 	# derived from Sentinel-2 SCL (value==6); used as water mask for MODIS
 	is_water = Column(Boolean, nullable=True)
 
