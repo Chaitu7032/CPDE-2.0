@@ -81,7 +81,7 @@ export default function MethodologyPanel({ selectedGrid }) {
         </div>
 
         <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
-          Current selected grid live risk: {liveRisk === null ? 'Unavailable (fallback to worked example)' : formatValue(liveRisk)}
+          Current selected grid live risk: {liveRisk === null ? 'Unavailable' : formatValue(liveRisk)}
         </div>
 
         <details className="mt-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">

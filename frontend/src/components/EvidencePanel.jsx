@@ -12,20 +12,20 @@ function InfoBadge({ label, description }) {
   )
 }
 
-function readValue(value, fallbackValue) {
+function readValue(value) {
   if (value === null || value === undefined || value === '') {
-    return { value: fallbackValue, fallback: true }
+    return { value: 'Unavailable', missing: true }
   }
-  return { value, fallback: false }
+  return { value, missing: false }
 }
 
-function SourceValue({ label, content, fallback }) {
+function SourceValue({ label, content, missing, note }) {
   return (
     <div className="flex items-start justify-between gap-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
       <span className="text-sm font-medium text-slate-700">{label}</span>
       <div className="text-right">
         <div className="text-sm text-slate-800">{content}</div>
-        {fallback && <div className="text-xs text-amber-700">demo fallback</div>}
+        {missing && note ? <div className="text-xs text-slate-500">{note}</div> : null}
       </div>
     </div>
   )
@@ -34,13 +34,11 @@ function SourceValue({ label, content, fallback }) {
 export default function EvidencePanel({ selectedGrid, latestDate, provenance }) {
   const properties = selectedGrid?.properties || {}
 
-  const satelliteSource = readValue(provenance?.satellite_source, 'Sentinel-2 L2A (ESA)')
-  const acquisitionDate = readValue(provenance?.acquisition_date ?? latestDate, '2026-03-14')
-  const tileId = readValue(provenance?.tile_id ?? properties?.tile_id, 'T44QKF')
-  const cloudCoverage = readValue(
-    provenance?.cloud_coverage_pct ?? properties?.cloud_coverage_pct,
-    '11.8'
-  )
+  const satelliteSource = readValue(provenance?.satellite_source ?? 'Sentinel-2 L2A (ESA)')
+  const acquisitionDate = readValue(provenance?.acquisition_date ?? latestDate)
+  const acquisitionDatetime = readValue(provenance?.acquisition_datetime)
+  const tileId = readValue(provenance?.tile_id ?? properties?.tile_id)
+  const cloudCoverage = readValue(provenance?.cloud_coverage_pct ?? properties?.cloud_coverage_pct)
 
   return (
     <section className="space-y-4">
@@ -54,11 +52,12 @@ export default function EvidencePanel({ selectedGrid, latestDate, provenance }) 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <div className="rounded-lg border bg-white p-4 space-y-2">
           <div className="text-sm font-semibold text-slate-700">Data Provenance</div>
-          <SourceValue label="Satellite Source" content={satelliteSource.value} fallback={satelliteSource.fallback} />
-          <SourceValue label="Acquisition Date" content={acquisitionDate.value} fallback={acquisitionDate.fallback} />
-          <SourceValue label="Tile ID" content={tileId.value} fallback={tileId.fallback} />
-          <SourceValue label="Cloud Coverage (%)" content={cloudCoverage.value} fallback={cloudCoverage.fallback} />
-          <SourceValue label="Resolution" content="10m" fallback={false} />
+          <SourceValue label="Satellite Source" content={satelliteSource.value} missing={satelliteSource.missing} />
+          <SourceValue label="Acquisition Date" content={acquisitionDate.value} missing={acquisitionDate.missing} />
+          <SourceValue label="Acquisition Time" content={acquisitionDatetime.value} missing={acquisitionDatetime.missing} note="Acquisition timestamp is not stored for this scene yet." />
+          <SourceValue label="Tile ID" content={tileId.value} missing={tileId.missing} note="Tile identifier is not stored for this scene yet." />
+          <SourceValue label="Cloud Coverage (%)" content={cloudCoverage.value} missing={cloudCoverage.missing} note="Cloud coverage is not stored for this scene yet." />
+          <SourceValue label="Resolution" content="10m" missing={false} />
 
           <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
             Bands used:
@@ -93,8 +92,8 @@ export default function EvidencePanel({ selectedGrid, latestDate, provenance }) 
           <details className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
             <summary className="cursor-pointer font-medium">Provenance checklist</summary>
             <div className="mt-2 space-y-1">
-              <div>1. Verify acquisition date against the reported scene metadata.</div>
-              <div>2. Confirm tile identifier and cloud threshold used for scene selection.</div>
+              <div>1. Verify acquisition date and time against the reported scene metadata.</div>
+              <div>2. Confirm tile identifier and cloud coverage used for scene selection.</div>
               <div>3. Confirm CRS conversion chain before metric computations.</div>
             </div>
           </details>

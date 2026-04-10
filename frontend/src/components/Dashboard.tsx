@@ -4,6 +4,7 @@ import { GeoJSON, MapContainer, TileLayer } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
 import axios from 'axios'
 import ScientificLegend from './ScientificLegend'
+import AvailableDataPanel from './AvailableDataPanel'
 import GridInspector from './GridInspector'
 import EvidencePanel from './EvidencePanel'
 import ValidationPanel from './ValidationPanel'
@@ -32,9 +33,17 @@ type DashboardData = {
         row: number | null
         col: number | null
         is_water: boolean
+        b04: number | null
+        b08: number | null
+        b11: number | null
+        stac_item_id: string | null
+        acquisition_datetime: string | null
+        tile_id: string | null
+        cloud_coverage_pct: number | null
         ndvi: number | null
         ndmi: number | null
         lst_c: number | null
+        pixel_count: number | null
         ndvi_norm: number | null
         ndmi_norm: number | null
         lst_norm: number | null
@@ -50,6 +59,18 @@ type DashboardData = {
     }>
   }
   latest_date: string | null
+  latest_complete_date: string | null
+  mode: 'latest' | 'select'
+  selected_date: string | null
+  active_data_date: string | null
+  provenance: {
+    satellite_source: string | null
+    acquisition_date: string | null
+    acquisition_datetime: string | null
+    stac_item_id: string | null
+    tile_id: string | null
+    cloud_coverage_pct: number | null
+  } | null
   summary: {
     grid_count: number
     ndvi: { mean: number; min: number; max: number; count: number } | null
@@ -68,7 +89,7 @@ type DashboardData = {
 }
 
 type ColorMode = 'ndvi' | 'ndmi' | 'lst' | 'risk'
-type DashboardTab = 'dashboard' | 'grid-inspector' | 'evidence' | 'validation' | 'methodology'
+type DashboardTab = 'dashboard' | 'grid-inspector' | 'evidence' | 'validation' | 'methodology' | 'available-data'
 
 const DASHBOARD_TABS: Array<{ id: DashboardTab; label: string }> = [
   { id: 'dashboard', label: 'Dashboard' },
@@ -76,6 +97,7 @@ const DASHBOARD_TABS: Array<{ id: DashboardTab; label: string }> = [
   { id: 'evidence', label: 'Evidence' },
   { id: 'validation', label: 'Validation' },
   { id: 'methodology', label: 'Methodology' },
+  { id: 'available-data', label: 'Available Data' },
 ]
 
 function riskColor(v: number | null): string {
@@ -252,11 +274,12 @@ export default function Dashboard() {
 
   if (!data) return null
 
-  const { land, summary, weather, processing, latest_date } = data
+  const { land, summary, weather, processing, latest_date, latest_complete_date, mode, selected_date, active_data_date } = data
   const isProcessing = processing?.status === 'running' || processing?.status === 'queued'
   const hasData = summary.ndvi !== null || summary.lst !== null
   const latestWeather = weather && weather.length > 0 ? weather[weather.length - 1] : null
   const latestT2m = (typeof latestWeather?.t2m === 'number' && Number.isFinite(latestWeather.t2m)) ? latestWeather.t2m : null
+  const analysisDate = active_data_date || latest_complete_date || latest_date
 
   return (
     <div className="space-y-4">
@@ -310,8 +333,12 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {latest_date && (
-        <div className="text-xs text-gray-500">Latest satellite data: {latest_date}</div>
+      {analysisDate && (
+        <div className="text-xs text-gray-500">
+          {mode === 'select'
+            ? `Data date: ${analysisDate} (User selected)`
+            : `Latest satellite data: ${analysisDate}`}
+        </div>
       )}
 
       <div className="rounded-lg border bg-white p-2">
@@ -531,15 +558,15 @@ export default function Dashboard() {
           selectedGrid={selectedGridFeature as any}
           gridOptions={gridSelectionOptions}
           onSelectGrid={setSelectedGridId}
-          latestDate={latest_date}
+          latestDate={analysisDate}
         />
       )}
 
       {activeTab === 'evidence' && (
         <EvidencePanel
           selectedGrid={selectedGridFeature as any}
-          latestDate={latest_date}
-          provenance={(data as any)?.provenance || null}
+          latestDate={analysisDate}
+          provenance={data.provenance || null}
         />
       )}
 
@@ -549,6 +576,19 @@ export default function Dashboard() {
 
       {activeTab === 'methodology' && (
         <MethodologyPanel selectedGrid={selectedGridFeature as any} />
+      )}
+
+      {activeTab === 'available-data' && (
+        <AvailableDataPanel
+          landId={landId || ''}
+          landGeometry={land.geometry}
+          latestDate={latest_complete_date || latest_date}
+          mode={mode}
+          selectedDate={selected_date}
+          activeDataDate={analysisDate}
+          processingStatus={processing?.status || 'unknown'}
+          onRefresh={fetchDashboard}
+        />
       )}
     </div>
   )
