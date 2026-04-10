@@ -35,6 +35,17 @@ async def create_tables():
         # Create all tables from ORM models (idempotent — skips already-existing)
         await conn.run_sync(Base.metadata.create_all)
 
+        await conn.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS land_dashboard_state ("
+                "land_id INTEGER PRIMARY KEY, "
+                "mode TEXT NOT NULL DEFAULT 'latest', "
+                "selected_date DATE NULL, "
+                "updated_at TIMESTAMPTZ NOT NULL DEFAULT now()"
+                ")"
+            )
+        )
+
         # Lightweight local schema evolution (use Alembic for production).
         # Add `crop_type` if the database was created before this column existed.
         await conn.execute(text("ALTER TABLE IF EXISTS lands ADD COLUMN IF NOT EXISTS crop_type VARCHAR(64)"))
@@ -51,6 +62,14 @@ async def create_tables():
         await conn.execute(text("ALTER TABLE IF EXISTS land_grid_cells ADD COLUMN IF NOT EXISTS grid_num INTEGER"))
         await conn.execute(text("ALTER TABLE IF EXISTS land_grid_cells ADD COLUMN IF NOT EXISTS row_idx INTEGER"))
         await conn.execute(text("ALTER TABLE IF EXISTS land_grid_cells ADD COLUMN IF NOT EXISTS col_idx INTEGER"))
+
+        await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS b04 DOUBLE PRECISION"))
+        await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS b08 DOUBLE PRECISION"))
+        await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS b11 DOUBLE PRECISION"))
+        await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS stac_item_id VARCHAR(256)"))
+        await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS acquisition_datetime TIMESTAMP"))
+        await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS tile_id VARCHAR(64)"))
+        await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS cloud_cover_pct DOUBLE PRECISION"))
 
         # Canonical CRS enforcement: all persisted geometries must be UTM 44N (EPSG:32644).
         await conn.execute(

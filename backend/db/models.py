@@ -63,6 +63,13 @@ class LandDailyIndex(Base):
 	land_id = Column(Integer, nullable=False, index=True)
 	grid_id = Column(String(128), nullable=False, index=True)
 	date = Column(Date, nullable=False, index=True)
+	stac_item_id = Column(String(256), nullable=True)
+	acquisition_datetime = Column(DateTime(timezone=True), nullable=True)
+	tile_id = Column(String(64), nullable=True)
+	cloud_cover_pct = Column(Float, nullable=True)
+	b04 = Column(Float, nullable=True)
+	b08 = Column(Float, nullable=True)
+	b11 = Column(Float, nullable=True)
 	ndvi = Column(Float, nullable=True)
 	ndmi = Column(Float, nullable=True)
 	pixel_count = Column(Integer, nullable=True)
@@ -199,4 +206,13 @@ class ProcessingJob(Base):
 	status = Column(Text, nullable=False, server_default=text("'unknown'"))
 	step = Column(Text, nullable=True)
 	error = Column(Text, nullable=True)
+	updated_at = Column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+
+
+class LandDashboardState(Base):
+	__tablename__ = "land_dashboard_state"
+
+	land_id = Column(Integer, primary_key=True)
+	mode = Column(Text, nullable=False, server_default=text("'latest'"))
+	selected_date = Column(Date, nullable=True)
 	updated_at = Column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
