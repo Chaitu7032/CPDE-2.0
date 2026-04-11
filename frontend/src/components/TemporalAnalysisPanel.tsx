@@ -12,6 +12,7 @@ import {
 } from 'recharts'
 
 type DashboardMode = 'latest' | 'select'
+type TemporalMode = 'strict' | 'smart'
 
 type TemporalPoint = {
   date: string
@@ -21,6 +22,13 @@ type TemporalPoint = {
   rh2m?: number | null
   prectotcorr?: number | null
   distance_days?: number | null
+}
+
+type TemporalSourceDates = {
+  sentinel?: string | null
+  nasa?: string | null
+  modis?: string | null
+  [key: string]: string | null | undefined
 }
 
 type TemporalMetric = {
@@ -62,6 +70,14 @@ type TemporalAnalysisResponse = {
   }
   metrics: TemporalMetric[]
   warnings: string[]
+  source_dates?: TemporalSourceDates
+  metric_source_dates?: Record<string, string | null>
+  comparison_source_dates?: TemporalSourceDates
+  status?: 'ok' | 'no_data'
+  mode?: TemporalMode
+  note?: string | null
+  message?: string | null
+  data?: TemporalAnalysisResponse | null
 }
 
 type TemporalAnalysisPanelProps = {
@@ -100,6 +116,17 @@ function confidenceClass(label: string) {
   if (label === 'Medium') return 'bg-amber-100 text-amber-800 border-amber-200'
   if (label === 'Low') return 'bg-rose-100 text-rose-800 border-rose-200'
   return 'bg-slate-100 text-slate-700 border-slate-200'
+}
+
+function sourceModeLabel(sourceDate: string | null | undefined, activeDate: string | null): string {
+  if (!sourceDate) return 'Not Available'
+  if (activeDate && sourceDate === activeDate) return 'Exact'
+  return 'Nearest'
+}
+
+function sourceDisplayLabel(sourceName: string, sourceDate: string | null | undefined, activeDate: string | null) {
+  const label = sourceModeLabel(sourceDate, activeDate)
+  return `${sourceName} → ${sourceDate || 'Not Available'}${label === 'Not Available' ? '' : ` (${label})`}`
 }
 
 function metricTone(metric: TemporalMetric) {
@@ -222,13 +249,16 @@ function MetricCard({ metric }: { metric: TemporalMetric }) {
   )
 }
 
-export default function TemporalAnalysisPanel({ landId, activeDate, mode }: TemporalAnalysisPanelProps) {
+export default function TemporalAnalysisPanel({ landId, activeDate, mode: dashboardMode }: TemporalAnalysisPanelProps) {
+  const [analysisMode, setAnalysisMode] = useState<TemporalMode>('strict')
   const [comparisonDate, setComparisonDate] = useState('')
+  const [analysisEnvelope, setAnalysisEnvelope] = useState<TemporalAnalysisResponse | null>(null)
   const [analysis, setAnalysis] = useState<TemporalAnalysisResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [statusMessage, setStatusMessage] = useState<string | null>(null)
 
-  const fetchAnalysis = async (comparison: string) => {
+  const fetchAnalysis = async (comparison: string, requestedMode: TemporalMode = analysisMode) => {
     if (!activeDate) {
       setError('Reference date is unavailable until the dashboard finishes loading.')
       return
@@ -236,14 +266,25 @@ export default function TemporalAnalysisPanel({ landId, activeDate, mode }: Temp
 
     setLoading(true)
     setError(null)
+    setStatusMessage(null)
     try {
       const response = await axios.get<TemporalAnalysisResponse>(`/temporal-analysis/${landId}`, {
         params: {
           active_date: activeDate,
           comparison_date: comparison || undefined,
+          mode: requestedMode,
         },
       })
-      setAnalysis(response.data)
+      const envelope = response.data
+      setAnalysisEnvelope(envelope)
+      if (envelope.status === 'no_data') {
+        setAnalysis(null)
+        setStatusMessage(envelope.message || 'No data available for selected date')
+        return
+      }
+
+      const payload = envelope.data && typeof envelope.data === 'object' ? envelope.data : envelope
+      setAnalysis(payload)
     } catch (err: any) {
       setError(err?.response?.data?.detail || err.message || 'Temporal analysis failed')
     } finally {
@@ -258,11 +299,21 @@ export default function TemporalAnalysisPanel({ landId, activeDate, mode }: Temp
     void fetchAnalysis('')
   }, [activeDate, landId])
 
+  const handleModeChange = (nextMode: TemporalMode) => {
+    setAnalysisMode(nextMode)
+    setAnalysisEnvelope(null)
+    setAnalysis(null)
+    setStatusMessage(null)
+    void fetchAnalysis(comparisonDate, nextMode)
+  }
+
   const confidence = analysis?.confidence
-  const referenceLabel = mode === 'latest' ? 'AUTO' : 'SELECTED DATE'
+  const referenceLabel = dashboardMode === 'latest' ? 'AUTO' : 'SELECTED DATE'
   const comparisonLabel = comparisonDate || 'Not selected'
   const noComparisonMode = !comparisonDate
   const metrics = Array.isArray(analysis?.metrics) ? analysis.metrics : []
+  const sourceDates = analysisEnvelope?.source_dates || analysis?.source_dates
+  const smartModeActive = analysisEnvelope?.mode === 'smart' || analysisMode === 'smart'
 
   return (
     <section className="space-y-4">
@@ -278,6 +329,26 @@ export default function TemporalAnalysisPanel({ landId, activeDate, mode }: Temp
           <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
             <div className="font-semibold text-slate-800">Reference Date</div>
             <div>{activeDate || 'Unavailable'} ({referenceLabel})</div>
+          </div>
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <div className="text-sm font-semibold uppercase tracking-wide text-slate-500">Temporal Mode</div>
+          <div className="inline-flex rounded-full border border-slate-200 bg-slate-100 p-1">
+            <button
+              type="button"
+              className={`rounded-full px-3 py-1 text-sm font-semibold transition ${analysisMode === 'strict' ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
+              onClick={() => handleModeChange('strict')}
+            >
+              Strict Mode
+            </button>
+            <button
+              type="button"
+              className={`rounded-full px-3 py-1 text-sm font-semibold transition ${analysisMode === 'smart' ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
+              onClick={() => handleModeChange('smart')}
+            >
+              Smart Mode
+            </button>
           </div>
         </div>
 
@@ -305,7 +376,9 @@ export default function TemporalAnalysisPanel({ landId, activeDate, mode }: Temp
                 <div className="mt-3 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
                   <div>Comparison date: {comparisonLabel}</div>
                   <div className="text-xs text-slate-500">
-                    Nearest matches are selected independently per source within +/- 5 days.
+                    {analysisMode === 'smart'
+                      ? `Nearest matches are selected independently per source within +/- ${analysisEnvelope?.comparison_tolerance_days || 5} days.`
+                      : 'Strict mode uses exact dates only and does not fall back to nearby data.'}
                   </div>
                 </div>
               </div>
@@ -337,6 +410,39 @@ export default function TemporalAnalysisPanel({ landId, activeDate, mode }: Temp
           </div>
         </div>
 
+        {analysisEnvelope?.status === 'no_data' || statusMessage ? (
+          <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+            {statusMessage || analysisEnvelope?.message || 'No data available for selected date'}
+          </div>
+        ) : null}
+
+        {smartModeActive ? (
+          <div className="mt-4 space-y-3">
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+              ⚠ Using nearest available data within the configured tolerance window.
+            </div>
+            <div className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm text-sky-800">
+              Availability panel shows exact-date data only. Current view uses nearest available data.
+            </div>
+          </div>
+        ) : null}
+
+        {sourceDates ? (
+          <div className="mt-4 rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-700">
+            <div className="font-semibold text-slate-800">Data Sources Used</div>
+            <div className="mt-2 grid grid-cols-1 gap-1 sm:grid-cols-3">
+              <div>{sourceDisplayLabel('Sentinel-2', sourceDates.sentinel, activeDate)}</div>
+              <div>{sourceDisplayLabel('NASA POWER', sourceDates.nasa, activeDate)}</div>
+              <div>{sourceDisplayLabel('MODIS', sourceDates.modis, activeDate)}</div>
+            </div>
+            {analysisEnvelope?.comparison_source_dates ? (
+              <div className="mt-3 text-xs text-slate-500">
+                Comparison source dates - {sourceDisplayLabel('Sentinel-2', analysisEnvelope.comparison_source_dates.sentinel, analysis?.comparison_date || activeDate)}; {sourceDisplayLabel('NASA POWER', analysisEnvelope.comparison_source_dates.nasa, analysis?.comparison_date || activeDate)}; {sourceDisplayLabel('MODIS', analysisEnvelope.comparison_source_dates.modis, analysis?.comparison_date || activeDate)}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
         {analysis?.warnings?.length ? (
           <div className="mt-4 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-600">
             {analysis.warnings.map((warning) => (
@@ -364,7 +470,7 @@ export default function TemporalAnalysisPanel({ landId, activeDate, mode }: Temp
         ) : null}
       </div>
 
-        {analysis ? (
+      {analysis ? (
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           {metrics.map((metric) => (
             <MetricCard key={metric.key} metric={metric} />
@@ -372,7 +478,13 @@ export default function TemporalAnalysisPanel({ landId, activeDate, mode }: Temp
         </div>
       ) : (
         <div className="rounded-xl border border-dashed border-slate-300 bg-white p-6 text-sm text-slate-500">
-          {loading ? 'Loading temporal analysis...' : noComparisonMode ? 'Temporal analysis will show a historical trend once the active date is available.' : 'Choose a comparison date and run the analysis.'}
+          {loading
+            ? 'Loading temporal analysis...'
+            : statusMessage
+              ? statusMessage
+              : noComparisonMode
+                ? 'Temporal analysis will show a historical trend once the active date is available.'
+                : 'Choose a comparison date and run the analysis.'}
         </div>
       )}
     </section>
