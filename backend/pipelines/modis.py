@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 from datetime import date as _date
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -22,12 +22,53 @@ PC_STAC_API = "https://planetarycomputer.microsoft.com/api/stac/v1"
 logger = logging.getLogger(__name__)
 
 # Locked data source per requirements: Planetary Computer STAC.
-# Planetary Computer collection for MODIS LST daily (MOD11A1/MYD11A1 v061).
 DEFAULT_MODIS_STAC_COLLECTION = "modis-11A1-061"
 
-# Keep these for backwards-compatibility in API responses/logs.
+# Backwards-compatibility constants
 DEFAULT_MODIS_LST_SHORT_NAME = "MOD11A1"
 DEFAULT_MODIS_LST_VERSION = "061"
+
+# Timeouts
+STAC_SEARCH_TIMEOUT_S = 60
+RASTER_SAMPLE_TIMEOUT_S = 120
+
+
+def _modis_signing_status_code(exc: Exception) -> int | None:
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code
+    return None
+
+
+def _safe_sign_modis_item(item: Any) -> Any:
+    """
+    Sign a MODIS STAC item for Planetary Computer access.
+    
+    If signing fails (404/403/429 or any other error), returns the original item
+    unchanged — the STAC item hrefs already contain pre-signed SAS tokens that
+    are valid for ~24 hours and can be used directly.
+    """
+    try:
+        import planetary_computer  # type: ignore
+        return planetary_computer.sign(item)
+    except Exception as exc:
+        status_code = _modis_signing_status_code(exc)
+        if status_code in {403, 404, 429}:
+            logger.warning(
+                "MODIS signing failed status=%s item_id=%s — using original STAC hrefs (pre-signed SAS tokens)",
+                status_code,
+                getattr(item, "id", None),
+            )
+        else:
+            logger.warning(
+                "MODIS signing failed for item_id=%s — using original STAC hrefs: %s",
+                getattr(item, "id", None),
+                exc,
+            )
+        # The STAC href already has SAS params (?st=...&se=...&sig=...) — use as-is.
+        return item
+
 
 def _parse_valid_range_tag(tag_val: str | None) -> tuple[int | None, int | None]:
     if not tag_val:
@@ -42,10 +83,9 @@ def _parse_valid_range_tag(tag_val: str | None) -> tuple[int | None, int | None]
 
 
 def _qc_ok(qc_val: int) -> bool:
-    # MOD11A1 QC_Day bits (common interpretation)
-    # bits 0-1: Mandatory QA flags. 00 is best; 01 is still a produced pixel with
-    #           lower confidence and is commonly useful for downstream analysis.
-    # bits 2-3: Data quality. Keep only the usable classes.
+    # MOD11A1 QC_Day bits
+    # bits 0-1: Mandatory QA flags. 00 = best; 01 = lower confidence but usable.
+    # bits 2-3: Data quality. Keep only class 00.
     mandatory = qc_val & 0b11
     data_quality = (qc_val >> 2) & 0b11
     return mandatory in (0, 1) and data_quality == 0
@@ -78,7 +118,12 @@ def _sample_modis_lst_from_cogs(
     to_utm = Transformer.from_crs("EPSG:4326", dst_crs, always_xy=True)
     pts_xy = [to_utm.transform(lon, lat) for lon, lat in points_lonlat]
 
-    logger.info("MODIS raster sampling start href=%s points=%d utm_epsg=%s", lst_href, len(points_lonlat), utm_epsg)
+    logger.info(
+        "MODIS raster sampling start href=%s points=%d utm_epsg=%s",
+        lst_href,
+        len(points_lonlat),
+        utm_epsg,
+    )
 
     with rasterio.Env(**_rasterio_env_kwargs()):
         with rasterio.open(lst_href) as lst_src:
@@ -97,17 +142,30 @@ def _sample_modis_lst_from_cogs(
             lst_vrt = None
             qc_vrt = None
             try:
-                # Nearest-neighbor resampling is required to avoid fabricated values.
                 lst_vrt = WarpedVRT(lst_src, crs=dst_crs, resampling=Resampling.nearest)
-                qc_vrt = WarpedVRT(qc_src, crs=dst_crs, resampling=Resampling.nearest) if qc_src else None
+                qc_vrt = (
+                    WarpedVRT(qc_src, crs=dst_crs, resampling=Resampling.nearest)
+                    if qc_src
+                    else None
+                )
 
-                # Scale/offset are present in COG metadata for this collection.
                 try:
-                    scale = float(lst_src.scales[0]) if getattr(lst_src, "scales", None) and lst_src.scales[0] not in (None, 0) else 0.02
+                    scale = (
+                        float(lst_src.scales[0])
+                        if getattr(lst_src, "scales", None)
+                        and lst_src.scales[0] not in (None, 0)
+                        else 0.02
+                    )
                 except Exception:
                     scale = 0.02
+
                 try:
-                    offset = float(lst_src.offsets[0]) if getattr(lst_src, "offsets", None) and lst_src.offsets[0] not in (None,) else 0.0
+                    offset = (
+                        float(lst_src.offsets[0])
+                        if getattr(lst_src, "offsets", None)
+                        and lst_src.offsets[0] is not None
+                        else 0.0
+                    )
                 except Exception:
                     offset = 0.0
 
@@ -118,8 +176,12 @@ def _sample_modis_lst_from_cogs(
                     vmax = 65535
 
                 lst_vals = list(lst_vrt.sample(pts_xy, masked=True))
-                # QC in this collection can validly be 0; do not use masked=True because dataset nodata is 0.
-                qc_vals = list(qc_vrt.sample(pts_xy, masked=False)) if qc_vrt else [None] * len(pts_xy)
+                # QC can validly be 0; do not use masked=True because dataset nodata is 0.
+                qc_vals = (
+                    list(qc_vrt.sample(pts_xy, masked=False))
+                    if qc_vrt
+                    else [None] * len(pts_xy)
+                )
 
                 for i in range(len(pts_xy)):
                     lst_dn: int | None = None
@@ -145,18 +207,80 @@ def _sample_modis_lst_from_cogs(
                         lst_c = float(k - 273.15)
 
                     results.append({"lst_c": lst_c, "qc": qc_value, "qc_ok": qc_ok})
+
             except Exception as exc:
-                logger.exception("MODIS reprojection/sampling failed for href=%s", lst_href)
-                raise RuntimeError(f"MODIS reprojection failed for target EPSG:{utm_epsg}: {exc}") from exc
+                logger.exception(
+                    "MODIS reprojection/sampling failed for href=%s", lst_href
+                )
+                raise RuntimeError(
+                    f"MODIS reprojection failed for target EPSG:{utm_epsg}: {exc}"
+                ) from exc
             finally:
                 if lst_vrt is not None:
-                    lst_vrt.close()
+                    try:
+                        lst_vrt.close()
+                    except Exception:
+                        pass
                 if qc_vrt is not None:
-                    qc_vrt.close()
+                    try:
+                        qc_vrt.close()
+                    except Exception:
+                        pass
                 if qc_src is not None:
-                    qc_src.close()
+                    try:
+                        qc_src.close()
+                    except Exception:
+                        pass
 
     return results
+
+
+async def _stac_search_modis(
+    land_geom: Any,
+    dt: str,
+    stac_collection_id: str,
+    land_id: Any,
+) -> list[Any]:
+    """Run MODIS STAC search with a hard timeout."""
+
+    def _search() -> list[Any]:
+        from pystac_client import Client  # type: ignore
+        client = Client.open(PC_STAC_API)
+        search = client.search(
+            collections=[stac_collection_id],
+            intersects=land_geom.__geo_interface__,
+            datetime=dt,
+            max_items=200,
+        )
+        return list(search.items())
+
+    logger.info(
+        "MODIS STAC search land=%s collection=%s datetime=%s",
+        land_id,
+        stac_collection_id,
+        dt,
+    )
+    try:
+        items = await asyncio.wait_for(
+            asyncio.to_thread(_search),
+            timeout=STAC_SEARCH_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            "MODIS STAC search timed out after %ss for land=%s",
+            STAC_SEARCH_TIMEOUT_S,
+            land_id,
+        )
+        raise RuntimeError(f"MODIS STAC search timed out after {STAC_SEARCH_TIMEOUT_S}s")
+
+    items = [it for it in items if hasattr(it, "assets") and "LST_Day_1km" in it.assets]
+    logger.info(
+        "MODIS STAC returned %d usable items for land=%s date=%s",
+        len(items),
+        land_id,
+        dt,
+    )
+    return items
 
 
 async def _sample_modis_day(
@@ -166,16 +290,21 @@ async def _sample_modis_day(
     utm_epsg: int,
     land_geom: Any,
 ) -> tuple[list[dict[str, Any]], list[Any], int]:
-    import planetary_computer  # type: ignore
+    """
+    Sample MODIS LST for all grid points across available tile items.
+    
+    Uses _safe_sign_modis_item so signing failures (404 SAS endpoint) never
+    crash the pipeline — the original pre-signed hrefs are used as fallback.
+    """
+    signed_items = [_safe_sign_modis_item(it) for it in items]
 
-    signed_items = [planetary_computer.sign(it) for it in items]
     tiles: list[tuple[Any, Any]] = [
         (it, prep(shape(it.geometry)))
         for it in signed_items
         if getattr(it, "geometry", None)
     ]
     if not tiles and signed_items:
-        # Extremely defensive fallback: if tile geometries are missing, sample all points from the first item.
+        # Defensive fallback: if tile geometries are missing, sample from first item.
         tiles = [(signed_items[0], prep(land_geom))]
 
     if not tiles:
@@ -185,15 +314,14 @@ async def _sample_modis_day(
     for i, (lon, lat) in enumerate(points_lonlat):
         pt = Point(lon, lat)
         for tile_idx, (_it, geom) in enumerate(tiles):
-            # Use covers() so points on tile boundaries are included.
             if geom.covers(pt):
                 assignments[i] = tile_idx
                 break
 
-    # Prepare result list aligned to grids.
-    samples: list[dict[str, Any]] = [{"lst_c": None, "qc": None, "qc_ok": False} for _ in range(len(points_lonlat))]
+    samples: list[dict[str, Any]] = [
+        {"lst_c": None, "qc": None, "qc_ok": False} for _ in range(len(points_lonlat))
+    ]
 
-    # Sample each tile once for all its points.
     for tile_idx, (it, _geom) in enumerate(tiles):
         idxs = [i for i, a in enumerate(assignments) if a == tile_idx]
         if not idxs:
@@ -202,35 +330,66 @@ async def _sample_modis_day(
 
         lst_href = it.assets["LST_Day_1km"].href
         qc_href = it.assets["QC_Day"].href if "QC_Day" in it.assets else None
-        tile_samples = await asyncio.to_thread(
-            _sample_modis_lst_from_cogs,
-            lst_href=lst_href,
-            qc_href=qc_href,
-            utm_epsg=int(utm_epsg),
-            points_lonlat=sub_points,
-        )
+
+        try:
+            tile_samples = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _sample_modis_lst_from_cogs,
+                    lst_href=lst_href,
+                    qc_href=qc_href,
+                    utm_epsg=int(utm_epsg),
+                    points_lonlat=sub_points,
+                ),
+                timeout=RASTER_SAMPLE_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "MODIS raster sampling timed out after %ss for tile item_id=%s",
+                RASTER_SAMPLE_TIMEOUT_S,
+                getattr(it, "id", None),
+            )
+            continue
+        except Exception as exc:
+            logger.warning(
+                "MODIS raster sampling failed for tile item_id=%s: %s",
+                getattr(it, "id", None),
+                exc,
+            )
+            continue
+
         for j, grid_i in enumerate(idxs):
             samples[grid_i] = tile_samples[j]
 
-    valid_count = sum(1 for sample in samples if sample["lst_c"] is not None and np.isfinite(sample["lst_c"]))
-    logger.info("MODIS day sampling completed valid_count=%d total_points=%d", valid_count, len(points_lonlat))
+    valid_count = sum(
+        1
+        for sample in samples
+        if sample["lst_c"] is not None and np.isfinite(sample["lst_c"])
+    )
+    logger.info(
+        "MODIS day sampling completed valid_count=%d total_points=%d",
+        valid_count,
+        len(points_lonlat),
+    )
     return samples, signed_items, valid_count
 
 
-async def process_modis_for_land_day(land_id, date: str, collection_concept_id: str = None, allow_fallback: bool = True) -> dict:
-    """Phase 4 — MODIS LST ingestion via Planetary Computer STAC (no Earthdata OAuth).
+async def process_modis_for_land_day(
+    land_id,
+    date: str,
+    collection_concept_id: str = None,
+    allow_fallback: bool = True,
+    preloaded_items: Sequence[Any] | None = None,
+) -> dict:
+    """Phase 4 — MODIS LST ingestion via Planetary Computer STAC.
 
-    - Queries Planetary Computer STAC for MODIS LST daily (collection `modis-11A1-061` by default)
-    - Uses COG assets `LST_Day_1km` + `QC_Day`
-    - Nearest-neighbor only (no interpolation); QC-masked; scaled; Kelvin -> Celsius
-    - Excludes water grids (from Sentinel-2 SCL==6)
-    - Samples grid centroids and stores per-grid daily LST in `land_daily_lst`
-
-    Returns a dict compatible with existing API responses, plus:
-        - lst_mean: mean LST (°C) across processed non-null samples
-        - lst_date: the actual MODIS day used (YYYY-MM-DD)
+    Key resilience improvements:
+    - Signing failures (404/403/429) fall back to original pre-signed STAC hrefs
+    - STAC searches and raster sampling both have hard timeouts
+    - Sampling errors per-tile are warnings, not crashes — other tiles continue
+    - Returns {"processed": 0, "reason": ...} gracefully on any failure
+      so the calling pipeline can degrade instead of abort
     """
-    land_id = int(land_id)  # ensure integer for asyncpg type safety
+    land_id = int(land_id)
     logger.info(
         "MODIS processing start land=%s requested_date=%s allow_fallback=%s collection_override=%s",
         land_id,
@@ -238,7 +397,7 @@ async def process_modis_for_land_day(land_id, date: str, collection_concept_id: 
         allow_fallback,
         collection_concept_id,
     )
-    # fetch bbox, grid centroids, and land UTM EPSG
+
     async with async_session() as session:
         land_res = await session.execute(
             text(
@@ -257,14 +416,19 @@ async def process_modis_for_land_day(land_id, date: str, collection_concept_id: 
 
         if not utm_epsg:
             utm_epsg = int(STORAGE_CRS_EPSG)
-            await session.execute(text("UPDATE lands SET utm_epsg = :epsg WHERE land_id = :lid"), {"epsg": int(utm_epsg), "lid": land_id})
+            await session.execute(
+                text("UPDATE lands SET utm_epsg = :epsg WHERE land_id = :lid"),
+                {"epsg": int(utm_epsg), "lid": land_id},
+            )
 
         grids_res = await session.execute(
             text(
                 "SELECT grid_id, "
                 "ST_X(ST_Transform(COALESCE(centroid, ST_Centroid(geom)), 4326)) AS lon, "
                 "ST_Y(ST_Transform(COALESCE(centroid, ST_Centroid(geom)), 4326)) AS lat "
-                "FROM land_grid_cells WHERE land_id = :lid AND COALESCE(is_water, FALSE) = FALSE ORDER BY grid_id"
+                "FROM land_grid_cells "
+                "WHERE land_id = :lid AND COALESCE(is_water, FALSE) = FALSE "
+                "ORDER BY grid_id"
             ),
             {"lid": land_id},
         )
@@ -272,8 +436,9 @@ async def process_modis_for_land_day(land_id, date: str, collection_concept_id: 
 
         bbox_res = await session.execute(
             text(
-                "SELECT ST_XMin(ext) AS minx, ST_YMin(ext) AS miny, ST_XMax(ext) AS maxx, ST_YMax(ext) AS maxy "
-                "FROM (SELECT ST_Extent(ST_Transform(geom, 4326)) AS ext FROM land_grid_cells WHERE land_id = :lid) q"
+                "SELECT ST_XMin(ext), ST_YMin(ext), ST_XMax(ext), ST_YMax(ext) "
+                "FROM (SELECT ST_Extent(ST_Transform(geom, 4326)) AS ext "
+                "      FROM land_grid_cells WHERE land_id = :lid) q"
             ),
             {"lid": land_id},
         )
@@ -284,20 +449,13 @@ async def process_modis_for_land_day(land_id, date: str, collection_concept_id: 
     if not bbox_row:
         return {"processed": 0, "reason": "cannot compute bbox"}
 
-    bbox = [float(bbox_row[0]), float(bbox_row[1]), float(bbox_row[2]), float(bbox_row[3])]
-
-    # Determine STAC collection id.
     stac_collection_id = DEFAULT_MODIS_STAC_COLLECTION
-    if collection_concept_id:
-        # Support overrides while keeping backward compatibility with the API param name.
-        # If the provided value looks like a Planetary Computer collection id, use it.
-        if collection_concept_id.startswith("modis-"):
-            stac_collection_id = collection_concept_id
+    if collection_concept_id and collection_concept_id.startswith("modis-"):
+        stac_collection_id = collection_concept_id
 
     short_name = DEFAULT_MODIS_LST_SHORT_NAME
     version = DEFAULT_MODIS_LST_VERSION
 
-    # Fetch land geometry for STAC intersects query
     async with async_session() as session:
         land_geom_res = await session.execute(
             text("SELECT ST_AsGeoJSON(ST_Transform(geom, 4326)) FROM lands WHERE land_id = :lid"),
@@ -309,32 +467,23 @@ async def process_modis_for_land_day(land_id, date: str, collection_concept_id: 
         return {"processed": 0, "reason": "land geometry not found"}
 
     land_geom = shape(json.loads(land_geom_row[0]))
-
-    # Search backward until we find a day that actually yields usable LST, or only the exact day in strict mode.
-    from datetime import timedelta as _td
-    from pystac_client import Client  # type: ignore
-
-    client = Client.open(PC_STAC_API)
     target = datetime.fromisoformat(date).date()
+
     chosen_date: _date | None = None
     chosen_items: list[Any] = []
     samples: list[dict[str, Any]] = []
-    # PC MODIS archive has up to ~12-day latency; search 14 days back to ensure a hit.
-    day_offsets = range(0, 15) if allow_fallback else range(0, 1)
-    for day_offset in day_offsets:
-        day = target - _td(days=day_offset)
-        dt = f"{day.strftime('%Y-%m-%d')}T00:00:00Z/{day.strftime('%Y-%m-%d')}T23:59:59Z"
+
+    if preloaded_items is not None:
+        items = [
+            it
+            for it in preloaded_items
+            if hasattr(it, "assets") and "LST_Day_1km" in it.assets
+        ]
         logger.info(
-            "MODIS STAC search land=%s collection=%s datetime=%s",
+            "MODIS reusing %d preloaded STAC items for land=%s",
+            len(items),
             land_id,
-            stac_collection_id,
-            dt,
         )
-        search = client.search(collections=[stac_collection_id], intersects=land_geom.__geo_interface__, datetime=dt, max_items=200)
-        items = list(search.items())
-        # Keep only items with required assets.
-        items = [it for it in items if hasattr(it, "assets") and ("LST_Day_1km" in it.assets)]
-        logger.info("MODIS STAC returned %d candidate items for day=%s land=%s", len(items), day, land_id)
         if items:
             try:
                 candidate_samples, candidate_items, valid_count = await _sample_modis_day(
@@ -344,10 +493,78 @@ async def process_modis_for_land_day(land_id, date: str, collection_concept_id: 
                     land_geom=land_geom,
                 )
             except Exception as exc:
-                logger.exception("MODIS sampling failed for land=%s day=%s", land_id, day)
-                return {"processed": 0, "reason": f"MODIS reprojection/sampling failed for land {land_id} on {day.strftime('%Y-%m-%d')}: {exc}"}
+                logger.exception(
+                    "MODIS sampling failed for land=%s day=%s", land_id, target
+                )
+                return {
+                    "processed": 0,
+                    "reason": f"MODIS sampling failed for land {land_id} on {target}: {exc}",
+                }
 
-            qc_values = sorted({sample["qc"] for sample in candidate_samples if sample.get("qc") is not None})
+            qc_values = sorted(
+                {sample["qc"] for sample in candidate_samples if sample.get("qc") is not None}
+            )
+            logger.info(
+                "MODIS candidate day=%s valid_count=%d qc_values=%s",
+                target,
+                valid_count,
+                qc_values[:10],
+            )
+            if valid_count > 0:
+                chosen_date = target
+                chosen_items = candidate_items
+                samples = candidate_samples
+    else:
+        # Search backward until a day yields usable LST, or only exact day in strict mode.
+        day_offsets = range(0, 15) if allow_fallback else range(0, 1)
+
+        for day_offset in day_offsets:
+            day = target - timedelta(days=day_offset)
+            dt = f"{day.strftime('%Y-%m-%d')}T00:00:00Z/{day.strftime('%Y-%m-%d')}T23:59:59Z"
+
+            try:
+                items = await _stac_search_modis(
+                    land_geom, dt, stac_collection_id, land_id
+                )
+            except RuntimeError as exc:
+                # Timeout or other fatal search error — log and skip this day
+                logger.warning(
+                    "MODIS STAC search failed for land=%s day=%s: %s",
+                    land_id,
+                    day,
+                    exc,
+                )
+                continue
+
+            if not items:
+                continue
+
+            try:
+                candidate_samples, candidate_items, valid_count = await _sample_modis_day(
+                    items=items,
+                    points_lonlat=[(float(r[1]), float(r[2])) for r in grid_rows],
+                    utm_epsg=int(utm_epsg),
+                    land_geom=land_geom,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "MODIS sampling failed for land=%s day=%s: %s", land_id, day, exc
+                )
+                # Don't abort — try next day in fallback mode
+                if not allow_fallback:
+                    return {
+                        "processed": 0,
+                        "reason": f"MODIS sampling failed for land {land_id} on {day}: {exc}",
+                    }
+                continue
+
+            qc_values = sorted(
+                {
+                    sample["qc"]
+                    for sample in candidate_samples
+                    if sample.get("qc") is not None
+                }
+            )
             logger.info(
                 "MODIS candidate day=%s valid_count=%d qc_values=%s",
                 day,
@@ -367,12 +584,14 @@ async def process_modis_for_land_day(land_id, date: str, collection_concept_id: 
             date,
             stac_collection_id,
         )
-        return {"processed": 0, "reason": "no MODIS scenes with usable LST found for land within 14-day window"}
+        return {
+            "processed": 0,
+            "reason": "no MODIS scenes with usable LST found for land within 14-day window",
+        }
 
-    # land_grid_cells.grid_id is INT in the current DB; pipeline tables store grid_id as VARCHAR
     grid_ids = [str(r[0]) for r in grid_rows]
-
     date_obj = chosen_date
+
     upsert_sql = text(
         "INSERT INTO land_daily_lst (land_id, grid_id, date, lst_c, qc) "
         "VALUES (:land_id, :grid_id, :date, :lst_c, :qc) "
@@ -384,23 +603,40 @@ async def process_modis_for_land_day(land_id, date: str, collection_concept_id: 
     async with async_session() as session:
         params = []
         for gid, vals in zip(grid_ids, samples):
-            params.append({"land_id": land_id, "grid_id": gid, "date": date_obj, "lst_c": vals["lst_c"], "qc": vals["qc"]})
-            if vals.get("lst_c") is not None and np.isfinite(vals.get("lst_c")):
+            params.append(
+                {
+                    "land_id": land_id,
+                    "grid_id": gid,
+                    "date": date_obj,
+                    "lst_c": vals["lst_c"],
+                    "qc": vals["qc"],
+                }
+            )
+            if vals.get("lst_c") is not None and np.isfinite(vals["lst_c"]):
                 lst_nonnull.append(float(vals["lst_c"]))
             processed += 1
         await session.execute(upsert_sql, params)
         await session.commit()
 
-    lst_mean: float | None = (sum(lst_nonnull) / len(lst_nonnull)) if lst_nonnull else None
+    lst_mean: float | None = (
+        sum(lst_nonnull) / len(lst_nonnull) if lst_nonnull else None
+    )
 
-    # Backwards-compat fields: granule_id/hdf_url
     granule_id = getattr(chosen_items[0], "id", None)
     hdf_url = None
     try:
         if "hdf" in chosen_items[0].assets:
             hdf_url = chosen_items[0].assets["hdf"].href
     except Exception:
-        hdf_url = None
+        pass
+
+    logger.info(
+        "MODIS processing complete land=%s chosen_date=%s processed=%d lst_mean=%s",
+        land_id,
+        chosen_date,
+        processed,
+        lst_mean,
+    )
 
     return {
         "processed": processed,

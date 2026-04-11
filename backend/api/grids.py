@@ -27,6 +27,12 @@ async def generate_grids(req: GridRequest) -> GridGenerateResponse:
         raise HTTPException(status_code=400, detail="CPDE uses fixed 10m x 10m grid cells (cell_size_m must be 10.0)")
     try:
         grid_ids = await generate_and_store_grids(req.land_id, cell_size_m=req.cell_size_m)
+        try:
+            from backend.api.dashboard import _invalidate_land_cache
+
+            _invalidate_land_cache(int(req.land_id))
+        except Exception:
+            pass
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:

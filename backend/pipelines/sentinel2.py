@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -16,6 +16,9 @@ from backend.db.connection import async_session
 
 PC_STAC_API = "https://planetarycomputer.microsoft.com/api/stac/v1"
 logger = logging.getLogger(__name__)
+
+# Global timeout for STAC searches (seconds). Prevents silent hangs.
+STAC_SEARCH_TIMEOUT_S = 60
 
 
 def _rasterio_env_kwargs() -> dict[str, str]:
@@ -70,7 +73,6 @@ def _pick_best_item(items: Sequence[Any]) -> Optional[Any]:
         except Exception:
             return 1e9
 
-    # Lowest cloud cover first
     return sorted(items, key=cloud_cover)[0]
 
 
@@ -90,7 +92,6 @@ def _item_sort_key(item: Any) -> tuple[float, float]:
     except Exception:
         cloud_score = 1e9
 
-    # Newer scenes first, then lower cloud cover for tie-breaking.
     return (item_ts, -cloud_score)
 
 
@@ -125,7 +126,12 @@ def _compute_indices_for_points(
     )
 
     with rasterio.Env(**_rasterio_env_kwargs()):
-        with rasterio.open(b08_href) as b08_src, rasterio.open(b04_href) as b04_src, rasterio.open(b11_href) as b11_src, rasterio.open(scl_href) as scl_src:
+        with (
+            rasterio.open(b08_href) as b08_src,
+            rasterio.open(b04_href) as b04_src,
+            rasterio.open(b11_href) as b11_src,
+            rasterio.open(scl_href) as scl_src,
+        ):
             target_crs = b08_src.crs
             if target_crs is None:
                 props = item.properties if hasattr(item, "properties") and isinstance(item.properties, dict) else {}
@@ -152,30 +158,32 @@ def _compute_indices_for_points(
             )
 
             if target_crs is None:
-                raise RuntimeError(f"Sentinel-2 item {getattr(item, 'id', None)} has no usable CRS metadata")
+                raise RuntimeError(
+                    f"Sentinel-2 item {getattr(item, 'id', None)} has no usable CRS metadata"
+                )
 
             try:
-                # Transform points to item CRS
                 transformer = Transformer.from_crs("EPSG:4326", target_crs, always_xy=True)
                 pts_xy = [transformer.transform(lon, lat) for lon, lat in points_lonlat]
 
-                # Build VRTs for resampling B11 and SCL onto 10m grid
-                with WarpedVRT(
-                    b11_src,
-                    crs=target_crs,
-                    transform=b08_src.transform,
-                    width=b08_src.width,
-                    height=b08_src.height,
-                    resampling=Resampling.bilinear,
-                ) as b11_vrt, WarpedVRT(
-                    scl_src,
-                    crs=target_crs,
-                    transform=b08_src.transform,
-                    width=b08_src.width,
-                    height=b08_src.height,
-                    resampling=Resampling.nearest,
-                ) as scl_vrt:
-                    # Sample in one pass per dataset
+                with (
+                    WarpedVRT(
+                        b11_src,
+                        crs=target_crs,
+                        transform=b08_src.transform,
+                        width=b08_src.width,
+                        height=b08_src.height,
+                        resampling=Resampling.bilinear,
+                    ) as b11_vrt,
+                    WarpedVRT(
+                        scl_src,
+                        crs=target_crs,
+                        transform=b08_src.transform,
+                        width=b08_src.width,
+                        height=b08_src.height,
+                        resampling=Resampling.nearest,
+                    ) as scl_vrt,
+                ):
                     red_vals = list(b04_src.sample(pts_xy, masked=True))
                     nir_vals = list(b08_src.sample(pts_xy, masked=True))
                     swir_vals = list(b11_vrt.sample(pts_xy, masked=True))
@@ -187,7 +195,7 @@ def _compute_indices_for_points(
                         swir = float(swir_vals[idx][0]) if not swir_vals[idx].mask[0] else np.nan
                         scl = int(scl_vals[idx][0]) if not scl_vals[idx].mask[0] else -1
 
-                        is_water = True if scl == 6 else False
+                        is_water = scl == 6
                         is_clear = _scl_is_clear(scl)
 
                         ndvi = None
@@ -197,9 +205,15 @@ def _compute_indices_for_points(
                         b11 = None
                         pixel_count = 0
 
-                        if is_clear and (not is_water) and np.isfinite(red) and np.isfinite(nir) and np.isfinite(swir):
-                            denom1 = (nir + red)
-                            denom2 = (nir + swir)
+                        if (
+                            is_clear
+                            and not is_water
+                            and np.isfinite(red)
+                            and np.isfinite(nir)
+                            and np.isfinite(swir)
+                        ):
+                            denom1 = nir + red
+                            denom2 = nir + swir
                             if denom1 != 0 and denom2 != 0:
                                 ndvi = float((nir - red) / denom1)
                                 ndmi = float((nir - swir) / denom2)
@@ -221,25 +235,92 @@ def _compute_indices_for_points(
                             }
                         )
             except Exception as exc:
-                logger.exception("Sentinel-2 reprojection/sampling failed for item=%s", getattr(item, "id", None))
-                raise RuntimeError(f"Sentinel-2 reprojection failed for item {getattr(item, 'id', None)}: {exc}") from exc
+                logger.exception(
+                    "Sentinel-2 reprojection/sampling failed for item=%s",
+                    getattr(item, "id", None),
+                )
+                raise RuntimeError(
+                    f"Sentinel-2 reprojection failed for item {getattr(item, 'id', None)}: {exc}"
+                ) from exc
 
     return results
 
 
-async def process_sentinel2_for_land_day(land_id, date: str, allow_fallback: bool = True, cloud_threshold_pct: float | None = None) -> dict:
+async def _stac_search_sentinel2(
+    land_geom: Any,
+    start_date: str,
+    end_date: str,
+    land_id: Any,
+) -> list[Any]:
+    """Run Sentinel-2 STAC search with a hard timeout to prevent hangs."""
+    from pystac_client import Client  # type: ignore
+
+    dt = f"{start_date}T00:00:00Z/{end_date}T23:59:59Z"
+    logger.info(
+        "Sentinel-2 STAC search land=%s collection=sentinel-2-l2a datetime=%s",
+        land_id,
+        dt,
+    )
+
+    def _search() -> list[Any]:
+        client = Client.open(PC_STAC_API)
+        search = client.search(
+            collections=["sentinel-2-l2a"],
+            intersects=land_geom.__geo_interface__,
+            datetime=dt,
+            max_items=50,
+        )
+        return list(search.items())
+
+    try:
+        items = await asyncio.wait_for(
+            asyncio.to_thread(_search),
+            timeout=STAC_SEARCH_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            "Sentinel-2 STAC search timed out after %ss for land=%s",
+            STAC_SEARCH_TIMEOUT_S,
+            land_id,
+        )
+        raise RuntimeError(
+            f"Sentinel-2 STAC search timed out after {STAC_SEARCH_TIMEOUT_S}s"
+        )
+
+    items = [it for it in items if all(k in it.assets for k in ("B04", "B08", "B11", "SCL"))]
+    logger.info(
+        "Sentinel-2 STAC search returned %d candidate items for land=%s",
+        len(items),
+        land_id,
+    )
+    if items:
+        logger.info(
+            "Sentinel-2 candidate item ids=%s",
+            [getattr(it, "id", None) for it in items[:10]],
+        )
+    return items
+
+
+async def process_sentinel2_for_land_day(
+    land_id,
+    date: str,
+    allow_fallback: bool = True,
+    cloud_threshold_pct: float | None = None,
+    preloaded_items: Sequence[Any] | None = None,
+    preferred_item: Any | None = None,
+) -> dict:
     """Phase 3 — Sentinel-2 L2A ingestion (authoritative via Planetary Computer STAC).
 
     For a target UTC date (YYYY-MM-DD), searches up to 10 days backward to find the
     most recent cloud-free image:
-    - Query STAC with land geometry
+    - Query STAC with land geometry (with hard timeout)
     - Pick the least-cloudy item
     - Sample per-grid centroids (10m grid => 1 pixel per cell)
     - Apply SCL masking (cloud/snow/water)
     - Compute NDVI/NDMI; persist in land_daily_indices
     - Persist is_water flag on grid cells
     """
-    land_id = int(land_id)  # ensure integer for asyncpg type safety
+    land_id = int(land_id)
     logger.info(
         "Sentinel-2 processing start land=%s requested_date=%s allow_fallback=%s cloud_threshold_pct=%s",
         land_id,
@@ -247,7 +328,7 @@ async def process_sentinel2_for_land_day(land_id, date: str, allow_fallback: boo
         allow_fallback,
         cloud_threshold_pct,
     )
-    # Fetch land geometry for STAC intersects query
+
     async with async_session() as session:
         land_res = await session.execute(
             text("SELECT ST_AsGeoJSON(ST_Transform(geom, 4326)) FROM lands WHERE land_id = :lid"),
@@ -272,50 +353,61 @@ async def process_sentinel2_for_land_day(land_id, date: str, allow_fallback: boo
         return {"processed": 0, "reason": "no grids for land"}
 
     land_geom = shape(__import__("json").loads(land_row[0]))
-
-    # Query STAC — search a 10-day window backward in latest mode, or only the exact date in strict mode.
-    from pystac_client import Client  # type: ignore
-    from datetime import timedelta
-
-    client = Client.open(PC_STAC_API)
     target = datetime.fromisoformat(date).date()
-    start_date = (target - timedelta(days=10)).strftime("%Y-%m-%d") if allow_fallback else target.strftime("%Y-%m-%d")
-    end_date = target.strftime("%Y-%m-%d")
-    dt = f"{start_date}T00:00:00Z/{end_date}T23:59:59Z"
-    logger.info(
-        "Sentinel-2 STAC search land=%s collection=%s datetime=%s",
-        land_id,
-        "sentinel-2-l2a",
-        dt,
-    )
-    search = client.search(collections=["sentinel-2-l2a"], intersects=land_geom.__geo_interface__, datetime=dt, max_items=50)
-    items = list(search.items())
-    # keep items with required assets
-    items = [it for it in items if all(k in it.assets for k in ("B04", "B08", "B11", "SCL"))]
-    logger.info(
-        "Sentinel-2 STAC search returned %d candidate items for land=%s",
-        len(items),
-        land_id,
-    )
-    if items:
-        logger.info("Sentinel-2 candidate item ids=%s", [getattr(it, "id", None) for it in items[:10]])
+
+    # FIX: define these in outer scope so they're always accessible
+    start_date: str = target.strftime("%Y-%m-%d")
+    end_date: str = target.strftime("%Y-%m-%d")
+
+    if preferred_item is not None:
+        items = [preferred_item]
+        logger.info(
+            "Sentinel-2 reusing preselected STAC item land=%s item=%s",
+            land_id,
+            getattr(preferred_item, "id", None),
+        )
+    elif preloaded_items is not None:
+        items = [
+            it
+            for it in preloaded_items
+            if hasattr(it, "assets") and all(k in it.assets for k in ("B04", "B08", "B11", "SCL"))
+        ]
+        logger.info(
+            "Sentinel-2 reusing %d preloaded STAC items for land=%s",
+            len(items),
+            land_id,
+        )
+    else:
+        start_date = (
+            (target - timedelta(days=10)).strftime("%Y-%m-%d")
+            if allow_fallback
+            else target.strftime("%Y-%m-%d")
+        )
+        end_date = target.strftime("%Y-%m-%d")
+        try:
+            items = await _stac_search_sentinel2(land_geom, start_date, end_date, land_id)
+        except RuntimeError as exc:
+            return {"processed": 0, "reason": str(exc)}
 
     if not items:
-        return {"processed": 0, "reason": f"no Sentinel-2 L2A items found for land in {start_date} to {end_date}"}
+        return {
+            "processed": 0,
+            "reason": f"no Sentinel-2 L2A items found for land in {start_date} to {end_date}",
+        }
 
-    # Pick the newest scene that actually yields at least one usable pixel.
-    # Cloud cover alone is not enough: a low-cloud scene can still be cloudy over
-    # this specific field, which leaves every grid cell blank.
     grid_ids = [str(r[0]) for r in grid_rows]
     points = [(float(r[1]), float(r[2])) for r in grid_rows]
 
     selected_item = None
     idx_results: list[dict[str, Any]] | None = None
     last_error: str | None = None
+
     for candidate in sorted(items, key=_item_sort_key, reverse=True):
         try:
             cloud_cover = _extract_cloud_cover(candidate)
-            if cloud_threshold_pct is not None and (cloud_cover is None or cloud_cover > cloud_threshold_pct):
+            if cloud_threshold_pct is not None and (
+                cloud_cover is None or cloud_cover > cloud_threshold_pct
+            ):
                 continue
             logger.info(
                 "Sentinel-2 evaluating item=%s datetime=%s cloud_cover=%s",
@@ -323,10 +415,23 @@ async def process_sentinel2_for_land_day(land_id, date: str, allow_fallback: boo
                 _extract_item_datetime(candidate),
                 cloud_cover,
             )
-            candidate_results = await asyncio.to_thread(_compute_indices_for_points, candidate, points)
+            candidate_results = await asyncio.wait_for(
+                asyncio.to_thread(_compute_indices_for_points, candidate, points),
+                timeout=120,  # 2-min hard cap per item
+            )
+        except asyncio.TimeoutError:
+            last_error = "raster sampling timed out"
+            logger.error(
+                "Sentinel-2 raster sampling timed out for item=%s",
+                getattr(candidate, "id", None),
+            )
+            continue
         except Exception as e:
             last_error = f"{type(e).__name__}: {e}"
-            logger.exception("Sentinel-2 sampling error for item %s", getattr(candidate, "id", None))
+            logger.exception(
+                "Sentinel-2 sampling error for item %s",
+                getattr(candidate, "id", None),
+            )
             continue
 
         usable_count = sum(1 for result in candidate_results if result["pixel_count"] > 0)
@@ -342,32 +447,43 @@ async def process_sentinel2_for_land_day(land_id, date: str, allow_fallback: boo
             break
 
     if selected_item is None or idx_results is None:
-        if last_error:
-            return {"processed": 0, "reason": f"Sentinel-2 reprojection/sampling failed for land in {start_date} to {end_date}: {last_error}"}
-        return {"processed": 0, "reason": f"no usable Sentinel-2 pixels found for land in {start_date} to {end_date}"}
+        reason = (
+            f"Sentinel-2 reprojection/sampling failed for land in {start_date} to {end_date}: {last_error}"
+            if last_error
+            else f"no usable Sentinel-2 pixels found for land in {start_date} to {end_date}"
+        )
+        return {"processed": 0, "reason": reason}
 
-    # Use the actual acquisition date from the selected item, not the requested date.
     item_dt = _extract_item_datetime(selected_item)
-    if item_dt:
-        actual_date = item_dt.date()
-    else:
-        actual_date = target
+    actual_date = item_dt.date() if item_dt else target
 
     stac_item_id = getattr(selected_item, "id", None)
     tile_id = _extract_tile_id(selected_item)
     cloud_cover = _extract_cloud_cover(selected_item)
     acquisition_datetime = item_dt.replace(tzinfo=None) if item_dt else None
-
     date_obj = actual_date
+
     upsert_sql = text(
-        "INSERT INTO land_daily_indices (land_id, grid_id, date, stac_item_id, acquisition_datetime, tile_id, cloud_cover_pct, b04, b08, b11, ndvi, ndmi, pixel_count) "
-        "VALUES (:land_id, :grid_id, :date, :stac_item_id, :acquisition_datetime, :tile_id, :cloud_cover_pct, :b04, :b08, :b11, :ndvi, :ndmi, :pixel_count) "
-        "ON CONFLICT (grid_id, date) DO UPDATE SET stac_item_id = EXCLUDED.stac_item_id, acquisition_datetime = EXCLUDED.acquisition_datetime, tile_id = EXCLUDED.tile_id, cloud_cover_pct = EXCLUDED.cloud_cover_pct, b04 = EXCLUDED.b04, b08 = EXCLUDED.b08, b11 = EXCLUDED.b11, ndvi = EXCLUDED.ndvi, ndmi = EXCLUDED.ndmi, pixel_count = EXCLUDED.pixel_count"
+        "INSERT INTO land_daily_indices "
+        "(land_id, grid_id, date, stac_item_id, acquisition_datetime, tile_id, "
+        " cloud_cover_pct, b04, b08, b11, ndvi, ndmi, pixel_count) "
+        "VALUES (:land_id, :grid_id, :date, :stac_item_id, :acquisition_datetime, "
+        "        :tile_id, :cloud_cover_pct, :b04, :b08, :b11, :ndvi, :ndmi, :pixel_count) "
+        "ON CONFLICT (grid_id, date) DO UPDATE SET "
+        "  stac_item_id        = EXCLUDED.stac_item_id, "
+        "  acquisition_datetime = EXCLUDED.acquisition_datetime, "
+        "  tile_id             = EXCLUDED.tile_id, "
+        "  cloud_cover_pct     = EXCLUDED.cloud_cover_pct, "
+        "  b04                 = EXCLUDED.b04, "
+        "  b08                 = EXCLUDED.b08, "
+        "  b11                 = EXCLUDED.b11, "
+        "  ndvi                = EXCLUDED.ndvi, "
+        "  ndmi                = EXCLUDED.ndmi, "
+        "  pixel_count         = EXCLUDED.pixel_count"
     )
 
     processed = 0
     async with async_session() as session:
-        # batch writes
         params = []
         water_updates = []
         for gid_str, (gid_raw, _lon, _lat), vals in zip(grid_ids, grid_rows, idx_results):
@@ -388,21 +504,30 @@ async def process_sentinel2_for_land_day(land_id, date: str, allow_fallback: boo
                     "pixel_count": vals["pixel_count"],
                 }
             )
-            # update water mask only when SCL was valid
             if vals.get("scl", -1) >= 0:
-                water_updates.append({"grid_id": gid_raw, "is_water": bool(vals.get("is_water"))})
+                water_updates.append(
+                    {"grid_id": gid_raw, "is_water": bool(vals.get("is_water"))}
+                )
             processed += 1
 
         if params:
             await session.execute(upsert_sql, params)
-
         if water_updates:
             await session.execute(
-                text("UPDATE land_grid_cells SET is_water = :is_water WHERE grid_id = :grid_id"),
+                text(
+                    "UPDATE land_grid_cells SET is_water = :is_water WHERE grid_id = :grid_id"
+                ),
                 water_updates,
             )
-
         await session.commit()
+
+    logger.info(
+        "Sentinel-2 processing complete land=%s date=%s processed=%d stac_item=%s",
+        land_id,
+        date_obj,
+        processed,
+        stac_item_id,
+    )
 
     return {
         "processed": processed,

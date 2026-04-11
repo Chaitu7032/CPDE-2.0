@@ -164,6 +164,13 @@ async def register_land(payload: LandCreate):
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
 
+    try:
+        from backend.api.dashboard import _invalidate_land_cache
+
+        _invalidate_land_cache(int(land_id))
+    except Exception:
+        pass
+
     return {"land_id": str(land_id), "utm_epsg": utm_epsg, "area_sqm": area_sqm}
 
 

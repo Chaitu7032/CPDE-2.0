@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react'
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { GeoJSON, MapContainer, TileLayer } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
@@ -9,6 +9,7 @@ import GridInspector from './GridInspector'
 import EvidencePanel from './EvidencePanel'
 import ValidationPanel from './ValidationPanel'
 import MethodologyPanel from './MethodologyPanel'
+import TemporalAnalysisPanel from './TemporalAnalysisPanel'
 import {
   BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line, Legend,
@@ -89,7 +90,7 @@ type DashboardData = {
 }
 
 type ColorMode = 'ndvi' | 'ndmi' | 'lst' | 'risk'
-type DashboardTab = 'dashboard' | 'grid-inspector' | 'evidence' | 'validation' | 'methodology' | 'available-data'
+type DashboardTab = 'dashboard' | 'grid-inspector' | 'evidence' | 'validation' | 'methodology' | 'available-data' | 'temporal-analysis'
 
 const DASHBOARD_TABS: Array<{ id: DashboardTab; label: string }> = [
   { id: 'dashboard', label: 'Dashboard' },
@@ -98,6 +99,7 @@ const DASHBOARD_TABS: Array<{ id: DashboardTab; label: string }> = [
   { id: 'validation', label: 'Validation' },
   { id: 'methodology', label: 'Methodology' },
   { id: 'available-data', label: 'Available Data' },
+  { id: 'temporal-analysis', label: 'Temporal Analysis' },
 ]
 
 function riskColor(v: number | null): string {
@@ -107,6 +109,38 @@ function riskColor(v: number | null): string {
   const r = Math.round(255 * t)
   const g = Math.round(200 * (1 - t))
   return `rgb(${r},${g},50)`
+}
+
+class TabErrorBoundary extends React.Component<
+  { title: string; children: React.ReactNode },
+  { hasError: boolean; message: string | null }
+> {
+  constructor(props: { title: string; children: React.ReactNode }) {
+    super(props)
+    this.state = { hasError: false, message: null }
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, message: error.message }
+  }
+
+  componentDidCatch(error: Error) {
+    console.error(`${this.props.title} failed`, error)
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+          <div className="font-semibold">{this.props.title} is temporarily unavailable</div>
+          <div className="mt-1">{this.state.message || 'A rendering error occurred.'}</div>
+          <div className="mt-2 text-xs text-rose-700">Refresh the page after the dashboard settles, or return to the main tab.</div>
+        </div>
+      )
+    }
+
+    return this.props.children
+  }
 }
 
 export default function Dashboard() {
@@ -119,21 +153,40 @@ export default function Dashboard() {
   const [pollCount, setPollCount] = useState(0)
   const [hoveredGridId, setHoveredGridId] = useState<number | null>(null)
   const [selectedGridId, setSelectedGridId] = useState<number | null>(null)
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
+  // Reset UI state when navigating between lands.
+  useEffect(() => {
+    setData(null)
+    setError(null)
+    setLoading(true)
+  }, [landId])
 
   const fetchDashboard = useCallback(async () => {
     try {
       const res = await axios.get(`/dashboard/${landId}`)
+      if (!mountedRef.current) return
       setData(res.data)
       setError(null)
     } catch (err: any) {
+      if (!mountedRef.current) return
       setError(err?.response?.data?.detail || err.message || 'Failed to load dashboard')
     } finally {
-      setLoading(false)
+      if (mountedRef.current) {
+        setLoading(false)
+      }
     }
   }, [landId])
 
   useEffect(() => {
-    fetchDashboard()
+    void fetchDashboard()
   }, [fetchDashboard])
 
   // Poll for updates while processing is running
@@ -272,7 +325,15 @@ export default function Dashboard() {
     )
   }
 
-  if (!data) return null
+  if (!data) {
+    return (
+      <div className="rounded-lg border bg-white p-6 text-sm text-gray-600">
+        {loading
+          ? `Loading dashboard for land ${landId}...`
+          : 'Dashboard data is not available yet. Please try again in a moment.'}
+      </div>
+    )
+  }
 
   const { land, summary, weather, processing, latest_date, latest_complete_date, mode, selected_date, active_data_date } = data
   const isProcessing = processing?.status === 'running' || processing?.status === 'queued'
@@ -589,6 +650,16 @@ export default function Dashboard() {
           processingStatus={processing?.status || 'unknown'}
           onRefresh={fetchDashboard}
         />
+      )}
+
+      {activeTab === 'temporal-analysis' && (
+        <TabErrorBoundary title="Temporal Analysis">
+          <TemporalAnalysisPanel
+            landId={landId || ''}
+            activeDate={analysisDate}
+            mode={mode}
+          />
+        </TabErrorBoundary>
       )}
     </div>
   )

@@ -5,7 +5,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from backend.db.connection import init_db, db_health
+from backend.db.connection import init_db, db_health, async_session
 from backend.db.init_tables import create_tables
 from backend.api.lands import router as lands_router
 from backend.api.grids import router as grids_router
@@ -16,6 +16,8 @@ from backend.api.anomalies import router as anomalies_router
 from backend.api.forecast import router as forecast_router
 from backend.api.dashboard import router as dashboard_router
 from backend.api.field_technical_details import router as field_technical_details_router
+from backend.api.temporal_analysis import router as temporal_analysis_router
+from sqlalchemy import text
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -37,6 +39,24 @@ async def lifespan(app: FastAPI):
         logger.error("Cannot connect to database! Check DATABASE_URL in .env")
     yield
     # Shutdown
+    try:
+        # If the server is stopped while background pipelines are running,
+        # those tasks are cancelled. Mark jobs as cancelled so the UI doesn't
+        # keep polling forever on next startup.
+        async with async_session() as session:
+            await session.execute(
+                text(
+                    "UPDATE processing_jobs "
+                    "SET status = 'error', step = 'cancelled', "
+                    "    error = 'Processing cancelled (server shutdown / Ctrl+C).', "
+                    "    updated_at = now() "
+                    "WHERE status IN ('queued', 'running')"
+                )
+            )
+            await session.commit()
+    except Exception:
+        logger.exception("Failed to mark in-flight processing jobs as cancelled")
+
     from backend.db.database import engine
     await engine.dispose()
     logger.info("CPDE API shut down.")
@@ -93,3 +113,4 @@ app.include_router(anomalies_router)
 app.include_router(forecast_router)
 app.include_router(dashboard_router)
 app.include_router(field_technical_details_router)
+app.include_router(temporal_analysis_router)

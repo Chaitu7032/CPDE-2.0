@@ -6,53 +6,10 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/lands': {
-        target: 'http://localhost:8000',
+      '/api': {
+        target: 'http://127.0.0.1:8000',
         changeOrigin: true,
-      },
-      '/grids': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-      },
-      '/sentinel2': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-      },
-      '/modis': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-      },
-      '/weather': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-      },
-      '/anomalies': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-      },
-      '/forecast': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-      },
-      '/dashboard': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-      },
-      '/field': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-      },
-      '/process': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-      },
-      '/db-health': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-      },
-      '/health': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, ''),
       },
     },
   },
