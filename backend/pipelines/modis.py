@@ -91,6 +91,47 @@ def _qc_ok(qc_val: int) -> bool:
     return mandatory in (0, 1) and data_quality == 0
 
 
+def _safe_sample_val(v: Any, default: Any = None, band_idx: int = 0) -> Any:
+    """Extract a clean scalar float from a rasterio sample result.
+    
+    Handles:
+    - 0D/scalar unmasked or masked arrays
+    - 1D arrays with scalar or array masks
+    - Multi-band arrays (indexed by band_idx)
+    - NaN, Inf, None, and non-numeric values (returns default)
+    """
+    if v is None or v is np.ma.masked:
+        return default
+    try:
+        # Check if v is a numpy masked array
+        if np.ma.is_masked(v):
+            mask = getattr(v, "mask", False)
+            if isinstance(mask, (bool, np.bool_)):
+                if mask:
+                    return default
+            elif hasattr(mask, "__getitem__") and getattr(mask, "ndim", 0) > 0:
+                if band_idx < len(mask) and bool(mask[band_idx]):
+                    return default
+            else:
+                return default
+
+        # Extract element by band_idx
+        if hasattr(v, "__getitem__") and getattr(v, "ndim", 0) > 0:
+            if len(v) == 0:
+                return default
+            item = v[band_idx] if band_idx < len(v) else v[0]
+        else:
+            item = v
+
+        if item is None or item is np.ma.masked or np.ma.is_masked(item):
+            return default
+
+        val = float(item)
+        return val if np.isfinite(val) else default
+    except Exception:
+        return default
+
+
 def _rasterio_env_kwargs() -> dict[str, str]:
     return {"GTIFF_SRS_SOURCE": "EPSG"}
 
@@ -184,19 +225,19 @@ def _sample_modis_lst_from_cogs(
                 )
 
                 for i in range(len(pts_xy)):
-                    lst_dn: int | None = None
-                    if lst_vals[i] is not None and not lst_vals[i].mask[0]:
-                        try:
-                            lst_dn = int(lst_vals[i][0])
-                        except Exception:
-                            lst_dn = None
+                    raw_dn = _safe_sample_val(lst_vals[i], default=None)
+                    lst_dn: int | None = int(raw_dn) if raw_dn is not None else None
 
                     qc_value: int | None = None
                     qc_ok = True
                     if qc_vrt and qc_vals[i] is not None:
                         try:
-                            qc_value = int(qc_vals[i][0])
-                            qc_ok = _qc_ok(qc_value)
+                            raw_qc = _safe_sample_val(qc_vals[i], default=None)
+                            if raw_qc is not None:
+                                qc_value = int(raw_qc)
+                                qc_ok = _qc_ok(qc_value)
+                            else:
+                                qc_ok = False
                         except Exception:
                             qc_value = None
                             qc_ok = False
@@ -593,9 +634,14 @@ async def process_modis_for_land_day(
     date_obj = chosen_date
 
     upsert_sql = text(
-        "INSERT INTO land_daily_lst (land_id, grid_id, date, lst_c, qc) "
-        "VALUES (:land_id, :grid_id, :date, :lst_c, :qc) "
-        "ON CONFLICT (grid_id, date) DO UPDATE SET lst_c = EXCLUDED.lst_c, qc = EXCLUDED.qc"
+        "INSERT INTO land_daily_lst (land_id, grid_id, date, lst_c, qc, source_sensor, native_resolution_m, is_modeled) "
+        "VALUES (:land_id, :grid_id, :date, :lst_c, :qc, 'MODIS', 1000.0, FALSE) "
+        "ON CONFLICT (grid_id, date) DO UPDATE SET "
+        "  lst_c = EXCLUDED.lst_c, "
+        "  qc = EXCLUDED.qc, "
+        "  source_sensor = 'MODIS', "
+        "  native_resolution_m = 1000.0, "
+        "  is_modeled = FALSE"
     )
 
     processed = 0
@@ -615,8 +661,9 @@ async def process_modis_for_land_day(
             if vals.get("lst_c") is not None and np.isfinite(vals["lst_c"]):
                 lst_nonnull.append(float(vals["lst_c"]))
             processed += 1
-        await session.execute(upsert_sql, params)
-        await session.commit()
+        if params:
+            await session.execute(upsert_sql, params)
+            await session.commit()
 
     lst_mean: float | None = (
         sum(lst_nonnull) / len(lst_nonnull) if lst_nonnull else None

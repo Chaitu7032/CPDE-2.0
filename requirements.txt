@@ -26,3 +26,5 @@ apscheduler>=3.10
 planetary-computer>=1.0
 pystac-client>=0.7.6
 pydantic>=2.6,<3
+pyjwt>=2.8
+bcrypt>=4.0

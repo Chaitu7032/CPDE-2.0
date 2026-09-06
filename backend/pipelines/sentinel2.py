@@ -1,3 +1,16 @@
+import os
+import sys
+
+# Ensure rasterio proj_data path is loaded on Windows
+try:
+    import rasterio._env
+    _proj_paths = rasterio._env.get_proj_data_search_paths()
+    if _proj_paths:
+        os.environ["PROJ_LIB"] = _proj_paths[0]
+        os.environ["PROJ_DATA"] = _proj_paths[0]
+except Exception:
+    pass
+
 import asyncio
 import logging
 from datetime import datetime, timedelta
@@ -22,7 +35,57 @@ STAC_SEARCH_TIMEOUT_S = 60
 
 
 def _rasterio_env_kwargs() -> dict[str, str]:
-    return {"GTIFF_SRS_SOURCE": "EPSG"}
+    proj_dir = os.path.abspath(os.path.join(os.path.dirname(rasterio.__file__), "proj_data"))
+    return {
+        "GTIFF_SRS_SOURCE": "EPSG",
+        "PROJ_LIB": proj_dir,
+        "PROJ_DATA": proj_dir,
+    }
+
+
+# Sentinel-2 band asset keys differ across Planetary Computer STAC versions.
+# L2A items from older ingestion pipelines use short names ("B04", "B08"),
+# while newer or harmonized collections sometimes use long names or aliases.
+BAND_ALIASES: dict[str, tuple[str, ...]] = {
+    "B04": ("B04", "red",   "RED",   "b04",  "red_10m"),
+    "B08": ("B08", "nir",   "NIR",   "b08",  "nir_10m",  "nir08"),
+    "B11": ("B11", "swir",  "SWIR",  "b11",  "swir16",   "swir_20m"),
+    "SCL": ("SCL", "scl",   "scene-classification", "SCL_20m"),
+    "B02": ("B02", "blue",  "BLUE",  "b02",  "blue_10m"),
+    "B03": ("B03", "green", "GREEN", "b03",  "green_10m"),
+    "B05": ("B05", "rededge", "REDEDGE", "b05", "rededge_20m"),
+}
+
+
+def _resolve_asset_href(item: Any, canonical_key: str) -> str:
+    """Return the href for a band, trying all known aliases.
+
+    Raises KeyError with a helpful message if none of the known aliases
+    are present in the STAC item's asset dictionary.
+    """
+    item_assets: dict[str, Any] = getattr(item, "assets", {}) or {}
+    aliases = BAND_ALIASES.get(canonical_key, (canonical_key,))
+    for alias in aliases:
+        asset = item_assets.get(alias)
+        if asset is not None:
+            href = getattr(asset, "href", None)
+            if href:
+                return href
+    tried = ", ".join(f"'{a}'" for a in aliases)
+    raise KeyError(
+        f"Band '{canonical_key}' not found in STAC item '{getattr(item, 'id', '?')}' "
+        f"(tried: {tried}). Available keys: {list(item_assets.keys())}"
+    )
+
+
+def _item_has_required_bands(item: Any, bands: tuple[str, ...] = ("B04", "B08", "B11", "SCL")) -> bool:
+    """Return True if all required bands can be resolved via aliases."""
+    item_assets: dict[str, Any] = getattr(item, "assets", {}) or {}
+    for band in bands:
+        aliases = BAND_ALIASES.get(band, (band,))
+        if not any(alias in item_assets for alias in aliases):
+            return False
+    return True
 
 
 def _extract_tile_id(item: Any) -> str | None:
@@ -52,6 +115,47 @@ def _extract_cloud_cover(item: Any) -> float | None:
         return float(value) if value is not None else None
     except Exception:
         return None
+
+
+def _safe_sample_val(v: Any, default: float = np.nan, band_idx: int = 0) -> float:
+    """Extract a clean scalar float from a rasterio sample result.
+    
+    Handles:
+    - 0D/scalar unmasked or masked arrays
+    - 1D arrays with scalar or array masks
+    - Multi-band arrays (indexed by band_idx)
+    - NaN, Inf, None, and non-numeric values (returns default)
+    """
+    if v is None or v is np.ma.masked:
+        return default
+    try:
+        # Check if v is a numpy masked array
+        if np.ma.is_masked(v):
+            mask = getattr(v, "mask", False)
+            if isinstance(mask, (bool, np.bool_)):
+                if mask:
+                    return default
+            elif hasattr(mask, "__getitem__") and getattr(mask, "ndim", 0) > 0:
+                if band_idx < len(mask) and bool(mask[band_idx]):
+                    return default
+            else:
+                return default
+
+        # Extract element by band_idx
+        if hasattr(v, "__getitem__") and getattr(v, "ndim", 0) > 0:
+            if len(v) == 0:
+                return default
+            item = v[band_idx] if band_idx < len(v) else v[0]
+        else:
+            item = v
+
+        if item is None or item is np.ma.masked or np.ma.is_masked(item):
+            return default
+
+        val = float(item)
+        return val if np.isfinite(val) else default
+    except Exception:
+        return default
 
 
 def _scl_is_clear(scl: int) -> bool:
@@ -108,10 +212,10 @@ def _compute_indices_for_points(
     import planetary_computer  # type: ignore
 
     signed_item = planetary_computer.sign(item)
-    b04_href = signed_item.assets["B04"].href
-    b08_href = signed_item.assets["B08"].href
-    b11_href = signed_item.assets["B11"].href
-    scl_href = signed_item.assets["SCL"].href
+    b04_href = _resolve_asset_href(signed_item, "B04")
+    b08_href = _resolve_asset_href(signed_item, "B08")
+    b11_href = _resolve_asset_href(signed_item, "B11")
+    scl_href = _resolve_asset_href(signed_item, "SCL")
 
     results: List[Dict[str, Any]] = []
 
@@ -136,16 +240,15 @@ def _compute_indices_for_points(
             if target_crs is None:
                 props = item.properties if hasattr(item, "properties") and isinstance(item.properties, dict) else {}
                 proj_code = props.get("proj:code") or props.get("proj:epsg")
-                if isinstance(proj_code, str) and proj_code:
-                    target_crs = rasterio.crs.CRS.from_string(proj_code)
-                elif proj_code is not None:
-                    target_crs = rasterio.crs.CRS.from_epsg(int(proj_code))
-                if target_crs is not None:
-                    logger.info(
-                        "Sentinel-2 using STAC projection fallback item=%s proj_code=%s",
-                        getattr(item, "id", None),
-                        proj_code,
-                    )
+                if proj_code:
+                    target_crs = f"EPSG:{proj_code}" if isinstance(proj_code, int) else str(proj_code)
+                else:
+                    target_crs = "EPSG:32644"
+                logger.info(
+                    "Sentinel-2 using projection fallback item=%s target_crs=%s",
+                    getattr(item, "id", None),
+                    target_crs,
+                )
 
             logger.info(
                 "Sentinel-2 raster metadata item=%s crs=%s target_crs=%s bounds=%s shape=%sx%s",
@@ -166,74 +269,87 @@ def _compute_indices_for_points(
                 transformer = Transformer.from_crs("EPSG:4326", target_crs, always_xy=True)
                 pts_xy = [transformer.transform(lon, lat) for lon, lat in points_lonlat]
 
-                with (
-                    WarpedVRT(
-                        b11_src,
-                        crs=target_crs,
-                        transform=b08_src.transform,
-                        width=b08_src.width,
-                        height=b08_src.height,
-                        resampling=Resampling.bilinear,
-                    ) as b11_vrt,
-                    WarpedVRT(
-                        scl_src,
-                        crs=target_crs,
-                        transform=b08_src.transform,
-                        width=b08_src.width,
-                        height=b08_src.height,
-                        resampling=Resampling.nearest,
-                    ) as scl_vrt,
-                ):
-                    red_vals = list(b04_src.sample(pts_xy, masked=True))
-                    nir_vals = list(b08_src.sample(pts_xy, masked=True))
-                    swir_vals = list(b11_vrt.sample(pts_xy, masked=True))
-                    scl_vals = list(scl_vrt.sample(pts_xy, masked=True))
+                red_vals = list(b04_src.sample(pts_xy, masked=True))
+                nir_vals = list(b08_src.sample(pts_xy, masked=True))
+                swir_vals = list(b11_src.sample(pts_xy, masked=True))
+                scl_vals = list(scl_src.sample(pts_xy, masked=True))
 
-                    for idx in range(len(points_lonlat)):
-                        red = float(red_vals[idx][0]) if not red_vals[idx].mask[0] else np.nan
-                        nir = float(nir_vals[idx][0]) if not nir_vals[idx].mask[0] else np.nan
-                        swir = float(swir_vals[idx][0]) if not swir_vals[idx].mask[0] else np.nan
-                        scl = int(scl_vals[idx][0]) if not scl_vals[idx].mask[0] else -1
+                for idx in range(len(points_lonlat)):
+                    red = _safe_sample_val(red_vals[idx], default=np.nan)
+                    nir = _safe_sample_val(nir_vals[idx], default=np.nan)
+                    swir = _safe_sample_val(swir_vals[idx], default=np.nan)
+                    scl_raw = _safe_sample_val(scl_vals[idx], default=-1.0)
+                    scl = int(scl_raw) if np.isfinite(scl_raw) and scl_raw >= 0 else -1
 
-                        is_water = scl == 6
-                        is_clear = _scl_is_clear(scl)
+                    is_scl_water = scl == 6
+                    is_clear = _scl_is_clear(scl) or is_scl_water
 
-                        ndvi = None
-                        ndmi = None
-                        b04 = None
-                        b08 = None
-                        b11 = None
-                        pixel_count = 0
+                    ndvi = None
+                    ndmi = None
+                    evi = None
+                    lswi = None
+                    b04 = None
+                    b08 = None
+                    b11 = None
+                    pixel_count = 0
+                    is_flooded_rice = False
+                    quality_flag = "OBSERVED"
 
-                        if (
-                            is_clear
-                            and not is_water
-                            and np.isfinite(red)
-                            and np.isfinite(nir)
-                            and np.isfinite(swir)
-                        ):
-                            denom1 = nir + red
-                            denom2 = nir + swir
-                            if denom1 != 0 and denom2 != 0:
-                                ndvi = float((nir - red) / denom1)
-                                ndmi = float((nir - swir) / denom2)
-                                pixel_count = 1
-                                b04 = float(red)
-                                b08 = float(nir)
-                                b11 = float(swir)
+                    if (
+                        is_clear
+                        and np.isfinite(red)
+                        and np.isfinite(nir)
+                        and np.isfinite(swir)
+                    ):
+                        denom_ndvi = nir + red
+                        denom_ndmi = nir + swir
 
-                        results.append(
-                            {
-                                "b04": b04,
-                                "b08": b08,
-                                "b11": b11,
-                                "ndvi": ndvi,
-                                "ndmi": ndmi,
-                                "pixel_count": pixel_count,
-                                "scl": scl,
-                                "is_water": is_water,
-                            }
-                        )
+                        if denom_ndvi != 0:
+                            ndvi = float((nir - red) / denom_ndvi)
+                        if denom_ndmi != 0:
+                            ndmi = float((nir - swir) / denom_ndmi)
+                            lswi = ndmi  # LSWI using B08 and B11
+
+                        # 2-band EVI calculation (Jiang et al. 2008)
+                        denom_evi = nir + 2.4 * red + 1.0
+                        if denom_evi != 0:
+                            evi = float(2.5 * (nir - red) / denom_evi)
+
+                        # Research-grade flooded rice classification (Xiao et al. 2005, 2006)
+                        # Paddies during transplanting/flooding show LSWI + 0.05 >= min(NDVI, EVI)
+                        if lswi is not None and ndvi is not None:
+                            min_veg = min(ndvi, evi) if evi is not None else ndvi
+                            if (lswi + 0.05) >= min_veg:
+                                is_flooded_rice = True
+                                quality_flag = "FLOODED_RICE"
+
+                        # If SCL flagged water but spectral indices show valid surface reflectance
+                        # on cropland, retain observation and flag as flooded rice
+                        if is_scl_water:
+                            is_flooded_rice = True
+                            quality_flag = "FLOODED_RICE"
+
+                        pixel_count = 1
+                        b04 = float(red)
+                        b08 = float(nir)
+                        b11 = float(swir)
+
+                    results.append(
+                        {
+                            "b04": b04,
+                            "b08": b08,
+                            "b11": b11,
+                            "ndvi": ndvi,
+                            "ndmi": ndmi,
+                            "evi": evi,
+                            "lswi": lswi,
+                            "pixel_count": pixel_count,
+                            "scl": scl,
+                            "is_water": is_scl_water and not is_flooded_rice,
+                            "is_flooded_rice": is_flooded_rice,
+                            "quality_flag": quality_flag,
+                        }
+                    )
             except Exception as exc:
                 logger.exception(
                     "Sentinel-2 reprojection/sampling failed for item=%s",
@@ -287,7 +403,7 @@ async def _stac_search_sentinel2(
             f"Sentinel-2 STAC search timed out after {STAC_SEARCH_TIMEOUT_S}s"
         )
 
-    items = [it for it in items if all(k in it.assets for k in ("B04", "B08", "B11", "SCL"))]
+    items = [it for it in items if _item_has_required_bands(it)]
     logger.info(
         "Sentinel-2 STAC search returned %d candidate items for land=%s",
         len(items),
@@ -299,6 +415,42 @@ async def _stac_search_sentinel2(
             [getattr(it, "id", None) for it in items[:10]],
         )
     return items
+
+
+async def _stac_search_sentinel2_window(
+    land_geom: Any,
+    anchor_date_str: str,
+    lookback_days: int,
+    land_id: Any,
+    cloud_threshold_pct: float = 60.0,
+) -> list[Any]:
+    """Single wide-window STAC search over [anchor_date - lookback_days, anchor_date].
+
+    Scientific rationale
+    --------------------
+    Serial day-by-day availability checks (14 × 30s = 7 min+) frequently hit the
+    600-second pipeline timeout.  A single STAC query over the full lookback window
+    returns all candidate scenes in one round-trip (~10s), then we pick the best one
+    client-side by (most recent date, lowest cloud cover).
+
+    This is equivalent to what the Planetary Computer data explorer does when you
+    browse a location over time — one STAC query, local ranking.
+    """
+    from datetime import date as _date
+    anchor = datetime.fromisoformat(anchor_date_str).date()
+    start  = (anchor - timedelta(days=lookback_days)).isoformat()
+    end    = anchor.isoformat()
+    items  = await _stac_search_sentinel2(land_geom, start, end, land_id)
+    # Filter by cloud threshold client-side
+    usable = [
+        it for it in items
+        if (cc := _extract_cloud_cover(it)) is not None and cc <= cloud_threshold_pct
+    ]
+    logger.info(
+        "Sentinel-2 window search: %d total items, %d below %.0f%% cloud for land=%s window=%s to %s",
+        len(items), len(usable), cloud_threshold_pct, land_id, start, end,
+    )
+    return usable
 
 
 async def process_sentinel2_for_land_day(
@@ -466,9 +618,9 @@ async def process_sentinel2_for_land_day(
     upsert_sql = text(
         "INSERT INTO land_daily_indices "
         "(land_id, grid_id, date, stac_item_id, acquisition_datetime, tile_id, "
-        " cloud_cover_pct, b04, b08, b11, ndvi, ndmi, pixel_count) "
+        " cloud_cover_pct, b04, b08, b11, ndvi, ndmi, evi, lswi, scl, quality_flag, native_resolution_m, pixel_count) "
         "VALUES (:land_id, :grid_id, :date, :stac_item_id, :acquisition_datetime, "
-        "        :tile_id, :cloud_cover_pct, :b04, :b08, :b11, :ndvi, :ndmi, :pixel_count) "
+        "        :tile_id, :cloud_cover_pct, :b04, :b08, :b11, :ndvi, :ndmi, :evi, :lswi, :scl, :quality_flag, 10.0, :pixel_count) "
         "ON CONFLICT (grid_id, date) DO UPDATE SET "
         "  stac_item_id        = EXCLUDED.stac_item_id, "
         "  acquisition_datetime = EXCLUDED.acquisition_datetime, "
@@ -479,6 +631,11 @@ async def process_sentinel2_for_land_day(
         "  b11                 = EXCLUDED.b11, "
         "  ndvi                = EXCLUDED.ndvi, "
         "  ndmi                = EXCLUDED.ndmi, "
+        "  evi                 = EXCLUDED.evi, "
+        "  lswi                = EXCLUDED.lswi, "
+        "  scl                 = EXCLUDED.scl, "
+        "  quality_flag        = EXCLUDED.quality_flag, "
+        "  native_resolution_m = EXCLUDED.native_resolution_m, "
         "  pixel_count         = EXCLUDED.pixel_count"
     )
 
@@ -501,6 +658,10 @@ async def process_sentinel2_for_land_day(
                     "b11": vals["b11"],
                     "ndvi": vals["ndvi"],
                     "ndmi": vals["ndmi"],
+                    "evi": vals.get("evi"),
+                    "lswi": vals.get("lswi"),
+                    "scl": vals.get("scl"),
+                    "quality_flag": vals.get("quality_flag", "OBSERVED"),
                     "pixel_count": vals["pixel_count"],
                 }
             )

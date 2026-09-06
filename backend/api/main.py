@@ -114,3 +114,21 @@ app.include_router(forecast_router)
 app.include_router(dashboard_router)
 app.include_router(field_technical_details_router)
 app.include_router(temporal_analysis_router)
+
+# ── CPDE v2 Research-Grade Production API ─────────────────────────────
+from backend.api.v2.auth import router as v2_auth_router
+from backend.api.v2.farms import router as v2_farms_router
+from backend.api.v2.fields import router as v2_fields_router
+from backend.api.v2.indices import router as v2_indices_router
+
+app.include_router(v2_auth_router, prefix="/api/v2")
+app.include_router(v2_farms_router, prefix="/api/v2")
+app.include_router(v2_fields_router, prefix="/api/v2")
+app.include_router(v2_indices_router, prefix="/api/v2")
+
+# Proxy-friendly alias (/v2)
+app.include_router(v2_auth_router, prefix="/v2")
+app.include_router(v2_farms_router, prefix="/v2")
+app.include_router(v2_fields_router, prefix="/v2")
+app.include_router(v2_indices_router, prefix="/v2")
+

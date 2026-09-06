@@ -66,10 +66,26 @@ async def create_tables():
         await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS b04 DOUBLE PRECISION"))
         await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS b08 DOUBLE PRECISION"))
         await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS b11 DOUBLE PRECISION"))
+        await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS b02 DOUBLE PRECISION"))
+        await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS b03 DOUBLE PRECISION"))
+        await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS b05 DOUBLE PRECISION"))
+        await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS evi DOUBLE PRECISION"))
+        await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS ndre DOUBLE PRECISION"))
+        await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS gci DOUBLE PRECISION"))
+        await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS lswi DOUBLE PRECISION"))
+        await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS scl INTEGER"))
         await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS stac_item_id VARCHAR(256)"))
         await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS acquisition_datetime TIMESTAMP"))
         await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS tile_id VARCHAR(64)"))
         await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS cloud_cover_pct DOUBLE PRECISION"))
+        await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS native_resolution_m DOUBLE PRECISION DEFAULT 10.0"))
+        await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS quality_flag VARCHAR(32) DEFAULT 'OBSERVED'"))
+
+        await conn.execute(text("ALTER TABLE IF EXISTS land_daily_lst ADD COLUMN IF NOT EXISTS source_sensor VARCHAR(32) DEFAULT 'MODIS'"))
+        await conn.execute(text("ALTER TABLE IF EXISTS land_daily_lst ADD COLUMN IF NOT EXISTS native_resolution_m DOUBLE PRECISION DEFAULT 1000.0"))
+        await conn.execute(text("ALTER TABLE IF EXISTS land_daily_lst ADD COLUMN IF NOT EXISTS is_modeled BOOLEAN DEFAULT FALSE"))
+
+        await conn.execute(text("ALTER TABLE IF EXISTS land_daily_weather ADD COLUMN IF NOT EXISTS vpd DOUBLE PRECISION"))
 
         # Canonical CRS enforcement: all persisted geometries must be UTM 44N (EPSG:32644).
         await conn.execute(
@@ -109,8 +125,11 @@ async def create_tables():
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_lands_geom_gist ON lands USING GIST (geom)"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_land_grid_cells_geom_gist ON land_grid_cells USING GIST (geom)"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_land_daily_indices_land_date ON land_daily_indices (land_id, date)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_land_daily_sar_land_date ON land_daily_sar (land_id, date)"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_land_daily_lst_land_date ON land_daily_lst (land_id, date)"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_land_daily_weather_land_date ON land_daily_weather (land_id, date)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_land_phenology_land_date ON land_phenology (land_id, date)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_land_multi_sensor_stress_land_date ON land_multi_sensor_stress (land_id, date)"))
 
         # Backfill missing numeric grid numbers for legacy rows to keep API output consistent.
         await conn.execute(

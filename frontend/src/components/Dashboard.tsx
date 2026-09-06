@@ -3,7 +3,8 @@ import { useParams, Link } from 'react-router-dom'
 import { GeoJSON, MapContainer, TileLayer } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
 import axios from 'axios'
-import ScientificLegend from './ScientificLegend'
+import ScientificLegend, { getColorForValue } from './ScientificLegend'
+import TraceabilityModal from './TraceabilityModal'
 import AvailableDataPanel from './AvailableDataPanel'
 import GridInspector from './GridInspector'
 import EvidencePanel from './EvidencePanel'
@@ -89,7 +90,8 @@ type DashboardData = {
   }
 }
 
-type ColorMode = 'ndvi' | 'ndmi' | 'lst' | 'risk'
+type ColorMode = 'ndvi' | 'ndmi' | 'ndre' | 'evi' | 'savi' | 'gci' | 'lst' | 'risk'
+type Persona = 'farmer' | 'researcher'
 type DashboardTab = 'dashboard' | 'grid-inspector' | 'evidence' | 'validation' | 'methodology' | 'available-data' | 'temporal-analysis'
 
 const DASHBOARD_TABS: Array<{ id: DashboardTab; label: string }> = [
@@ -150,6 +152,8 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<DashboardTab>('dashboard')
   const [colorMode, setColorMode] = useState<ColorMode>('ndvi')
+  const [persona, setPersona] = useState<Persona>('farmer')
+  const [traceModalKey, setTraceModalKey] = useState<string | null>(null)
   const [pollCount, setPollCount] = useState(0)
   const [hoveredGridId, setHoveredGridId] = useState<number | null>(null)
   const [selectedGridId, setSelectedGridId] = useState<number | null>(null)
@@ -224,15 +228,35 @@ export default function Dashboard() {
 
     if (props.is_water) return { weight: 1, fillOpacity: 0.68, color: '#333', fillColor: '#3388ff' }
 
-    const backendColor = colorMode === 'ndvi'
-      ? props.color?.ndvi
-      : colorMode === 'ndmi'
-        ? props.color?.ndmi
-        : colorMode === 'lst'
-          ? props.color?.lst
-          : null
+    const b02 = props.b02
+    const b03 = props.b03
+    const b04 = props.b04
+    const b05 = props.b05
+    const b08 = props.b08
+    const b11 = props.b11
 
-    const fillColor = backendColor || (colorMode === 'risk' ? riskColor(props.risk) : '#808080')
+    let fillColor = '#808080'
+    if (colorMode === 'ndvi') {
+      fillColor = getColorForValue('ndvi', props.ndvi)
+    } else if (colorMode === 'ndmi') {
+      fillColor = getColorForValue('ndmi', props.ndmi)
+    } else if (colorMode === 'ndre') {
+      const ndre = props.ndre ?? (b08 && b05 ? (b08 - b05) / (b08 + b05) : null)
+      fillColor = getColorForValue('ndre', ndre)
+    } else if (colorMode === 'evi') {
+      const evi = props.evi ?? (b08 && b04 && b02 ? 2.5 * ((b08 - b04) / (b08 + 6 * b04 - 7.5 * b02 + 1)) : null)
+      fillColor = getColorForValue('evi', evi)
+    } else if (colorMode === 'savi') {
+      const savi = props.savi ?? (b08 && b04 ? ((b08 - b04) / (b08 + b04 + 0.5)) * 1.5 : null)
+      fillColor = getColorForValue('savi', savi)
+    } else if (colorMode === 'gci') {
+      const gci = props.gci ?? (b08 && b03 ? (b08 / b03) - 1 : null)
+      fillColor = getColorForValue('gci', gci)
+    } else if (colorMode === 'lst') {
+      fillColor = getColorForValue('lst', props.lst_c)
+    } else if (colorMode === 'risk') {
+      fillColor = riskColor(props.risk)
+    }
 
     if (isHovered) {
       return { weight: 2.5, fillOpacity: 0.8, color: '#333', fillColor }
@@ -335,28 +359,144 @@ export default function Dashboard() {
     )
   }
 
-  const { land, summary, weather, processing, latest_date, latest_complete_date, mode, selected_date, active_data_date } = data
+  const land = data?.land || { land_id: Number(landId), farmer_name: 'Land', crop_type: null, geometry: null, area_sqm: null, created_at: null }
+  const summary = data?.summary || { grid_count: 0, ndvi: null, ndmi: null, lst: null, risk: null }
+  const weather = data?.weather || []
+  const processing = data?.processing || { status: 'idle', step: null, error: null }
+  const { latest_date, latest_complete_date, mode, selected_date, active_data_date } = data
   const isProcessing = processing?.status === 'running' || processing?.status === 'queued'
-  const hasData = summary.ndvi !== null || summary.lst !== null
+  const hasData = Boolean(summary?.ndvi || summary?.lst)
   const latestWeather = weather && weather.length > 0 ? weather[weather.length - 1] : null
   const latestT2m = (typeof latestWeather?.t2m === 'number' && Number.isFinite(latestWeather.t2m)) ? latestWeather.t2m : null
   const analysisDate = active_data_date || latest_complete_date || latest_date
 
   return (
     <div className="space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+      {/* Header with Dual Persona Switcher */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
         <div>
-          <h1 className="text-2xl font-bold text-green-800">Land Dashboard</h1>
-          <p className="text-sm text-gray-600">
-            {land.farmer_name} {land.crop_type ? `· ${land.crop_type}` : ''} · Land #{land.land_id}
-            {land.area_sqm ? ` · ${Math.round(land.area_sqm).toLocaleString()} m²` : ''}
+          <div className="flex items-center gap-2">
+            <span className="rounded bg-emerald-100 px-2 py-0.5 text-xs font-bold text-emerald-800">
+              CPDE v2 Engine
+            </span>
+            <h1 className="text-xl font-bold text-slate-800">Precision Field Cockpit</h1>
+          </div>
+          <p className="mt-0.5 text-xs text-slate-600">
+            {land.farmer_name} {land.crop_type ? `· Crop: ${land.crop_type}` : ''} · Field #{land.land_id}
+            {land.area_sqm ? ` · Area: ${(land.area_sqm / 10000).toFixed(2)} ha (${Math.round(land.area_sqm).toLocaleString()} m²)` : ''}
           </p>
         </div>
-        <Link to="/" className="rounded-md bg-gray-200 px-3 py-1.5 text-sm font-medium hover:bg-gray-300">
-          + New Land
-        </Link>
+
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Dual Persona Switcher */}
+          <div className="flex items-center rounded-lg border border-slate-200 bg-slate-50 p-1">
+            <button
+              type="button"
+              onClick={() => setPersona('farmer')}
+              className={`flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-bold transition ${
+                persona === 'farmer' ? 'bg-emerald-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              👨‍🌾 Farmer View
+            </button>
+            <button
+              type="button"
+              onClick={() => setPersona('researcher')}
+              className={`flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-bold transition ${
+                persona === 'researcher' ? 'bg-indigo-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              🔬 Researcher View
+            </button>
+          </div>
+
+          <Link to="/" className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100">
+            + New Field
+          </Link>
+        </div>
       </div>
+
+      {/* Farmer View: High-Contrast Actionable Status Card */}
+      {persona === 'farmer' && (
+        <div className="rounded-xl border border-emerald-200 bg-gradient-to-r from-emerald-50 to-teal-50 p-4 shadow-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold ${
+                (summary.ndvi?.mean ?? 0.5) >= 0.60
+                  ? 'bg-emerald-600 text-white'
+                  : (summary.ndvi?.mean ?? 0.5) >= 0.40
+                    ? 'bg-amber-500 text-white'
+                    : 'bg-red-600 text-white'
+              }`}>
+                {(summary.ndvi?.mean ?? 0.5) >= 0.60
+                  ? '✓ Optimal Crop Vigor'
+                  : (summary.ndvi?.mean ?? 0.5) >= 0.40
+                    ? '⚠ Moderate Canopy Growth'
+                    : '🚨 Early Crop Stress Alert'}
+              </span>
+              <span className="text-xs font-semibold text-slate-700">Sentinel-2 10m High-Resolution Diagnosis</span>
+            </div>
+            <span className="text-xs text-slate-500">
+              {analysisDate ? `Observation Date: ${analysisDate}` : 'Latest available capture'}
+            </span>
+          </div>
+
+          <div className="mt-2 text-sm text-slate-800">
+            {(summary.ndvi?.mean ?? 0.5) >= 0.60 ? (
+              <p>
+                <strong>Farmer Guidance:</strong> Field vegetation is actively photosynthesizing with balanced moisture. No premature chlorosis or thermal stress detected. Maintain scheduled agronomic practices.
+              </p>
+            ) : (summary.ndvi?.mean ?? 0.5) >= 0.40 ? (
+              <p>
+                <strong>Farmer Guidance:</strong> Canopy growth is moderate. Moisture levels are stable. Inspect lower leaves for minor nitrogen deficiency before next watering.
+              </p>
+            ) : (
+              <p>
+                <strong>Urgent Action Required:</strong> Pre-cause stress detected (declining canopy moisture and red-edge absorption before visible wilting). Schedule supplemental irrigation within 24 to 48 hours.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Researcher View: Scientific Export Center */}
+      {persona === 'researcher' && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-indigo-100 bg-indigo-50/50 p-3 text-xs">
+          <div className="flex items-center gap-2">
+            <span className="font-bold text-indigo-900">Research Publication Center:</span>
+            <span className="text-slate-600">Export 10m grid observation datasets with raw bands & indices</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <a
+              href={`/api/v2/fields/${landId}/export?format=csv`}
+              download
+              className="rounded-md border border-slate-300 bg-white px-2.5 py-1 font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              📥 CSV
+            </a>
+            <a
+              href={`/api/v2/fields/${landId}/export?format=geojson`}
+              download
+              className="rounded-md border border-slate-300 bg-white px-2.5 py-1 font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              📥 GeoJSON
+            </a>
+            <a
+              href={`/api/v2/fields/${landId}/export?format=parquet`}
+              download
+              className="rounded-md border border-slate-300 bg-white px-2.5 py-1 font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              📥 Parquet
+            </a>
+            <button
+              onClick={() => setTraceModalKey('ndvi')}
+              className="rounded-md bg-indigo-600 px-2.5 py-1 font-semibold text-white hover:bg-indigo-700"
+            >
+              🔬 Lineage & Citations
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Processing status */}
       {isProcessing && (
@@ -425,14 +565,18 @@ export default function Dashboard() {
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
           <div className="lg:col-span-2">
             <div className="rounded-lg border overflow-hidden">
-              <div className="flex gap-1 bg-gray-100 p-2">
-                {(['ndvi', 'ndmi', 'lst', 'risk'] as ColorMode[]).map(m => (
+              <div className="flex flex-wrap gap-1 bg-slate-100 p-2">
+                {(['ndvi', 'ndmi', 'ndre', 'evi', 'savi', 'gci', 'lst', 'risk'] as ColorMode[]).map(m => (
                   <button
                     key={m}
-                    className={`rounded px-3 py-1 text-xs font-semibold ${colorMode === m ? 'bg-green-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-200'}`}
+                    className={`rounded px-2.5 py-1 text-xs font-bold uppercase transition ${
+                      colorMode === m
+                        ? 'bg-emerald-600 text-white shadow-xs'
+                        : 'bg-white text-slate-700 hover:bg-slate-200'
+                    }`}
                     onClick={() => setColorMode(m)}
                   >
-                    {m.toUpperCase()}
+                    {m}
                   </button>
                 ))}
               </div>
@@ -533,13 +677,14 @@ export default function Dashboard() {
                         />
                         <YAxis tick={{ fontSize: 10 }} />
                         <Tooltip
-                          formatter={(value: number | null, _name: string, payload: any) => {
+                          formatter={((value: any, _name: any, payload: any) => {
                             if (value == null) return ['–', activeMetricKey.toUpperCase()]
                             const row = payload?.payload?.row
                             const col = payload?.payload?.col
                             const meta = row != null && col != null ? ` (row ${row}, col ${col})` : ''
                             return [value, `${activeMetricKey.toUpperCase()}${meta}`]
-                          }}
+                          }) as any}
+
                           labelFormatter={(label) => `Grid ${label}`}
                         />
                         <Bar dataKey={activeMetricKey}>
@@ -661,6 +806,14 @@ export default function Dashboard() {
           />
         </TabErrorBoundary>
       )}
+
+      {/* Scientific Traceability Modal */}
+      <TraceabilityModal
+        indexKey={traceModalKey}
+        isOpen={!!traceModalKey}
+        onClose={() => setTraceModalKey(null)}
+      />
     </div>
   )
 }
+

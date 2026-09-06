@@ -10,11 +10,17 @@ VARIABLE_SOURCES: dict[str, dict] = {
     # Grid-level (per grid_id)
     "ndvi": {"table": "land_daily_indices", "value_col": "ndvi", "pixel_count_col": "pixel_count", "level": "grid"},
     "ndmi": {"table": "land_daily_indices", "value_col": "ndmi", "pixel_count_col": "pixel_count", "level": "grid"},
+    "evi": {"table": "land_daily_indices", "value_col": "evi", "pixel_count_col": "pixel_count", "level": "grid"},
+    "lswi": {"table": "land_daily_indices", "value_col": "lswi", "pixel_count_col": "pixel_count", "level": "grid"},
     "lst": {"table": "land_daily_lst", "value_col": "lst_c", "pixel_count_col": None, "level": "grid"},
+    "sar_vv": {"table": "land_daily_sar", "value_col": "vv", "pixel_count_col": None, "level": "grid"},
+    "sar_vh": {"table": "land_daily_sar", "value_col": "vh", "pixel_count_col": None, "level": "grid"},
+    "sar_ratio": {"table": "land_daily_sar", "value_col": "vh_vv_ratio", "pixel_count_col": None, "level": "grid"},
     # Land-level (one value per land_id/day). Stored in climatology/anomalies under grid_id='__land__'
     "t2m": {"table": "land_daily_weather", "value_col": "t2m", "pixel_count_col": None, "level": "land"},
     "rh2m": {"table": "land_daily_weather", "value_col": "rh2m", "pixel_count_col": None, "level": "land"},
     "prectotcorr": {"table": "land_daily_weather", "value_col": "prectotcorr", "pixel_count_col": None, "level": "land"},
+    "vpd": {"table": "land_daily_weather", "value_col": "vpd", "pixel_count_col": None, "level": "land"},
 }
 
 LAND_LEVEL_GRID_ID = "__land__"

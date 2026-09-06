@@ -38,8 +38,13 @@ from backend.pipelines.sentinel2 import (
     _extract_item_datetime,
     _extract_tile_id,
     _item_sort_key,
+    _stac_search_sentinel2_window,
     process_sentinel2_for_land_day,
 )
+from backend.pipelines.sentinel1 import process_sentinel1_for_land_day
+from backend.pipelines.landsat import process_landsat_for_land_day
+from backend.pipelines.phenology import compute_phenology_for_land
+from backend.pipelines.fusion import compute_multi_sensor_stress_for_land
 from backend.utils.crs import STORAGE_CRS_EPSG, geometry_geojson_storage_to_api
 
 
@@ -410,12 +415,19 @@ async def _check_sentinel2_exact_availability(land_id: int, date_str: str, cloud
 
 
 async def _check_modis_exact_availability(land_id: int, date_str: str) -> dict[str, Any]:
+    """Check MODIS availability using STAC item existence only.
+
+    Deliberately avoids raster sampling here because:
+    - MODIS 1 km pixels may cover entire small fields → valid_count always 0
+    - Sampling adds 30-120s per day, making serial lookback unbearably slow
+    - MODIS is advisory-only; real sampling happens (non-blocking) in the pipeline
+    """
     cached_result = _get_cached_exact_availability(land_id, date_str, 60.0)
     if cached_result is not None and cached_result.get("sources", {}).get("modis") is not None:
         logger.info("availability cache hit source=modis land_id=%s date=%s", land_id, date_str)
         return cached_result["sources"]["modis"]
 
-    land_geom, grid_points, utm_epsg = await _load_land_context(land_id, non_water_only=True)
+    land_geom, grid_points, _utm_epsg = await _load_land_context(land_id, non_water_only=True)
     if not grid_points:
         result = {"available": False, "source": "modis", "reason": "no non-water grids available for this land"}
         _store_cached_exact_availability(land_id, date_str, 60.0, {"sources": {"modis": result}})
@@ -431,7 +443,7 @@ async def _check_modis_exact_availability(land_id: int, date_str: str) -> dict[s
             collections=[DEFAULT_MODIS_STAC_COLLECTION],
             intersects=land_geom.__geo_interface__,
             datetime=dt,
-            max_items=200,
+            max_items=10,  # existence check only — small limit
         )
         items = list(search.items())
         return [it for it in items if hasattr(it, "assets") and "LST_Day_1km" in it.assets]
@@ -439,12 +451,12 @@ async def _check_modis_exact_availability(land_id: int, date_str: str) -> dict[s
     try:
         items = await asyncio.wait_for(asyncio.to_thread(_search_modis), timeout=MODIS_AVAILABILITY_TIMEOUT_S)
     except asyncio.TimeoutError:
-        logger.warning("MODIS STAC availability search timed out land=%s date=%s", land_id, date_str)
+        logger.warning("MODIS STAC availability search timed out land=%s date=%s — treating as advisory unavailable", land_id, date_str)
         result = {"available": False, "source": "modis", "reason": f"MODIS STAC search timed out after {MODIS_AVAILABILITY_TIMEOUT_S}s"}
         _store_cached_exact_availability(land_id, date_str, 60.0, {"sources": {"modis": result}})
         return result
     except Exception as exc:
-        logger.warning("MODIS STAC search failed land=%s date=%s: %s", land_id, date_str, exc)
+        logger.warning("MODIS STAC search failed land=%s date=%s: %s — treating as advisory unavailable", land_id, date_str, exc)
         result = {"available": False, "source": "modis", "reason": f"MODIS STAC search failed: {exc}"}
         _store_cached_exact_availability(land_id, date_str, 60.0, {"sources": {"modis": result}})
         _store_exact_context(land_id, date_str, 60.0, {"modis": {"items": []}})
@@ -455,32 +467,11 @@ async def _check_modis_exact_availability(land_id: int, date_str: str) -> dict[s
         _store_cached_exact_availability(land_id, date_str, 60.0, {"sources": {"modis": result}})
         return result
 
-    try:
-        samples, _signed_items, valid_count = await _sample_modis_day(
-            items=items,
-            points_lonlat=[(lon, lat) for _, lon, lat in grid_points],
-            utm_epsg=int(utm_epsg),
-            land_geom=land_geom,
-        )
-    except Exception as exc:
-        logger.warning("MODIS availability sampling failed land=%s date=%s: %s", land_id, date_str, exc)
-        result = {"available": False, "source": "modis", "reason": f"MODIS sampling failed: {exc}"}
-        _store_cached_exact_availability(land_id, date_str, 60.0, {"sources": {"modis": result}})
-        _store_exact_context(land_id, date_str, 60.0, {"modis": {"items": items}})
-        return result
-
-    if valid_count <= 0:
-        result = {"available": False, "source": "modis", "reason": "no usable MODIS LST pixels found for the exact date"}
-        _store_cached_exact_availability(land_id, date_str, 60.0, {"sources": {"modis": result}})
-        _store_exact_context(land_id, date_str, 60.0, {"modis": {"items": items}})
-        return result
-
-    valid_samples = [sample for sample in samples if sample.get("lst_c") is not None]
+    # Existence confirmed — actual pixel validity checked during pipeline (non-blocking).
     result = {
         "available": True,
         "source": "modis",
-        "valid_grid_count": len(valid_samples),
-        "total_grid_count": len(grid_points),
+        "scene_count": len(items),
         "reason": None,
     }
     _store_cached_exact_availability(land_id, date_str, 60.0, {"sources": {"modis": result}})
@@ -587,14 +578,57 @@ async def _find_latest_exact_available_date(
     land_id: int,
     anchor_date: str,
     *,
-    lookback_days: int = 14,
+    lookback_days: int = 45,
     cloud_threshold_pct: float = 60.0,
 ) -> str | None:
     async def _search() -> str | None:
+        land_geom, _points, _utm = await _load_land_context(land_id)
+        # 1. Single batch search across full window for Sentinel-2 candidates
+        try:
+            candidates = await _stac_search_sentinel2_window(
+                land_geom,
+                anchor_date,
+                lookback_days,
+                land_id,
+                cloud_threshold_pct=cloud_threshold_pct,
+            )
+        except Exception as exc:
+            logger.warning("Batch Sentinel-2 window search failed land=%s: %s - falling back to daily check", land_id, exc)
+            candidates = []
+
+        if candidates:
+            # Sort candidates by (date desc, lowest cloud cover)
+            sorted_candidates = sorted(candidates, key=_item_sort_key, reverse=True)
+            candidate_dates: list[str] = []
+            for item in sorted_candidates:
+                dt = _extract_item_datetime(item)
+                if dt:
+                    d_str = dt.date().isoformat()
+                    if d_str not in candidate_dates:
+                        candidate_dates.append(d_str)
+
+            logger.info("Sentinel-2 window search found candidate dates: %s", candidate_dates)
+            for c_date in candidate_dates:
+                logger.info("Verifying candidate date land=%s candidate_date=%s", land_id, c_date)
+                try:
+                    availability = await _check_exact_date_availability(
+                        land_id,
+                        c_date,
+                        cloud_threshold_pct=cloud_threshold_pct,
+                    )
+                except Exception as exc:
+                    logger.warning("Availability check failed for land=%s date=%s: %s - skipping", land_id, c_date, exc)
+                    continue
+
+                if availability.get("available"):
+                    logger.info("Found available date land=%s date=%s modis_available=%s", land_id, c_date, availability.get("modis_available"))
+                    return c_date
+
+        # Fallback to day-by-day search if window search returned nothing or all failed
         target = datetime.fromisoformat(anchor_date).date()
-        for offset in range(0, lookback_days + 1):
+        for offset in range(0, min(lookback_days + 1, 15)):
             candidate = (target - timedelta(days=offset)).isoformat()
-            logger.info("Checking availability for land=%s candidate_date=%s (offset=%d/%d)", land_id, candidate, offset, lookback_days)
+            logger.info("Fallback checking availability for land=%s candidate_date=%s", land_id, candidate)
             try:
                 availability = await _check_exact_date_availability(
                     land_id,
@@ -625,7 +659,7 @@ async def _run_processing_pipeline(land_id: int, date_str: str) -> None:
         analysis_date = await _find_latest_exact_available_date(land_id, date_str)
         if analysis_date is None:
             msg = (
-                f"No usable Sentinel-2 + NASA POWER data found in the 14-day lookback window ending {date_str}. "
+                f"No usable Sentinel-2 + NASA POWER data found in the 45-day lookback window ending {date_str}. "
                 "MODIS unavailability does not block analysis."
             )
             logger.error("Pipeline aborted land=%s: %s", land_id, msg)
@@ -748,8 +782,22 @@ async def _run_exact_processing_pipeline(
             source_errors.append(f"NASA POWER: {exc}")
             logger.error("NASA POWER failed land=%s date=%s: %s", land_id, date_str, exc)
 
+        await _set_status(land_id, "running", "sar")
+        try:
+            sar_res = await process_sentinel1_for_land_day(land_id, date_str)
+            logger.info("Sentinel-1 SAR done land=%s processed=%d", land_id, sar_res.get("processed", 0))
+        except Exception as exc:
+            logger.warning("Sentinel-1 SAR skipped/failed land=%s: %s", land_id, exc)
+
+        await _set_status(land_id, "running", "phenology")
+        try:
+            pheno_res = await compute_phenology_for_land(land_id, date_str)
+            logger.info("Phenology done land=%s stage=%s GDD=%.1f", land_id, pheno_res.get("stage"), pheno_res.get("gdd_cumulative", 0.0))
+        except Exception as exc:
+            logger.warning("Phenology computation error land=%s: %s", land_id, exc)
+
         await _set_status(land_id, "running", "climatology")
-        for variable_name in ("ndvi", "ndmi", "lst", "t2m", "rh2m", "prectotcorr"):
+        for variable_name in ("ndvi", "ndmi", "evi", "lswi", "lst", "sar_vv", "sar_vh", "t2m", "rh2m", "prectotcorr", "vpd"):
             if variable_name in VARIABLE_SOURCES:
                 try:
                     await build_climatology_for_variable(land_id, variable_name)
@@ -760,6 +808,14 @@ async def _run_exact_processing_pipeline(
         s2_date = _safe_s2_date(s2, date_str) if s2.get("processed", 0) > 0 else None
         lst_date = mod.get("lst_date") if lst_available else None
         await _compute_anomalies_for_dates(land_id, _unique_dates(date_str, s2_date, lst_date))
+
+        await _set_status(land_id, "running", "fusion")
+        try:
+            fusion_res = await compute_multi_sensor_stress_for_land(land_id, date_str)
+            logger.info("Multi-sensor fusion done land=%s processed=%d", land_id, fusion_res.get("processed", 0))
+        except Exception as exc:
+            source_errors.append(f"Fusion: {exc}")
+            logger.error("Fusion computation failed land=%s date=%s: %s", land_id, date_str, exc)
 
         await _set_status(land_id, "running", "risk")
         try:
@@ -851,7 +907,10 @@ async def process_land(land_id: int, background_tasks: BackgroundTasks):
         if not res.first():
             raise HTTPException(status_code=404, detail="Land not found")
 
-    target_date = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+    # Skip the 7-day Planetary Computer ingestion latency window.
+    # PC STAC typically has data 5-14 days behind real-time; anchoring at
+    # today-7 ensures we land inside the confirmed-available archive.
+    target_date = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
     await _set_status(land_id, "queued", "pending")
     background_tasks.add_task(_run_processing_pipeline, land_id, target_date)
     return {
@@ -1059,8 +1118,40 @@ async def get_dashboard(land_id: int):
             )
             anomaly_rows = anomaly_res.fetchall()
 
+            pheno_res = await session.execute(
+                text(
+                    "SELECT stage, gdd_cumulative, stage_confidence, days_since_planting, phenological_evidence "
+                    "FROM land_phenology WHERE land_id = :lid AND date = :active_date LIMIT 1"
+                ),
+                {"lid": land_id, "active_date": active_date_obj},
+            )
+            pheno_row = pheno_res.first()
+
+            sar_res = await session.execute(
+                text(
+                    "SELECT AVG(vv) as mean_vv, AVG(vh) as mean_vh, AVG(vh_vv_ratio) as mean_ratio, COUNT(*) as count "
+                    "FROM land_daily_sar WHERE land_id = :lid AND date = :active_date"
+                ),
+                {"lid": land_id, "active_date": active_date_obj},
+            )
+            sar_summary_row = sar_res.first()
+
+            fusion_res = await session.execute(
+                text(
+                    "SELECT AVG(water_stress_score) as water, AVG(chlorophyll_stress_score) as chl, "
+                    "       AVG(heat_stress_score) as heat, MAX(confidence_level) as conf, MAX(dominant_stress) as dom "
+                    "FROM land_multi_sensor_stress WHERE land_id = :lid AND date = :active_date"
+                ),
+                {"lid": land_id, "active_date": active_date_obj},
+            )
+            fusion_summary_row = fusion_res.first()
+        else:
+            pheno_row = None
+            sar_summary_row = None
+            fusion_summary_row = None
+
         weather_res = await session.execute(
-            text("SELECT date, t2m, rh2m, prectotcorr FROM land_daily_weather WHERE land_id = :lid ORDER BY date DESC LIMIT 7"),
+            text("SELECT date, t2m, rh2m, prectotcorr, vpd FROM land_daily_weather WHERE land_id = :lid ORDER BY date DESC LIMIT 7"),
             {"lid": land_id},
         )
         weather_rows = list(reversed(weather_res.fetchall()))
@@ -1126,17 +1217,41 @@ async def get_dashboard(land_id: int):
 
     features = [_build_feature(record, ndvi_bounds, ndmi_bounds, lst_bounds) for record in records]
     summary = _build_summary(features)
-    weather = [{"date": _to_iso_string(row[0]), "t2m": row[1], "rh2m": row[2], "prectotcorr": row[3]} for row in weather_rows]
+    weather = [{"date": _to_iso_string(row[0]), "t2m": row[1], "rh2m": row[2], "prectotcorr": row[3], "vpd": row[4]} for row in weather_rows]
 
     provenance = None
     if provenance_row:
         provenance = {
-            "satellite_source": "Sentinel-2 L2A",
+            "satellite_source": "Sentinel-2 L2A (10m)",
             "acquisition_date": _to_iso_string(provenance_row[0]),
             "acquisition_datetime": _to_iso_string(provenance_row[2]),
             "stac_item_id": provenance_row[1],
             "tile_id": provenance_row[3],
             "cloud_coverage_pct": provenance_row[4],
+            "sensors_contributing": ["Sentinel-2 L2A (10m)", "NASA POWER (~50km)"],
+        }
+        if sar_summary_row and sar_summary_row[3] and sar_summary_row[3] > 0:
+            provenance["sensors_contributing"].append("Sentinel-1 GRD SAR (10m)")
+        if lst_rows:
+            provenance["sensors_contributing"].append("MODIS / Landsat Thermal (~1km/30m)")
+
+    phenology_data = None
+    if pheno_row:
+        phenology_data = {
+            "stage": pheno_row[0],
+            "gdd_cumulative": pheno_row[1],
+            "stage_confidence": pheno_row[2],
+            "days_since_planting": pheno_row[3],
+        }
+
+    multi_sensor_stress = None
+    if fusion_summary_row and fusion_summary_row[0] is not None:
+        multi_sensor_stress = {
+            "water_stress_mean": round(float(fusion_summary_row[0]), 3) if fusion_summary_row[0] is not None else None,
+            "chlorophyll_stress_mean": round(float(fusion_summary_row[1]), 3) if fusion_summary_row[1] is not None else None,
+            "heat_stress_mean": round(float(fusion_summary_row[2]), 3) if fusion_summary_row[2] is not None else None,
+            "confidence_level": fusion_summary_row[3],
+            "dominant_stress": fusion_summary_row[4],
         }
 
     processing = await _get_status(land_id)
@@ -1153,6 +1268,8 @@ async def get_dashboard(land_id: int):
         "selected_date": dashboard_state["selected_date"],
         "active_data_date": active_data_date,
         "provenance": provenance,
+        "phenology": phenology_data,
+        "multi_sensor_stress": multi_sensor_stress,
         "summary": summary,
         "weather": weather,
         "processing": processing,

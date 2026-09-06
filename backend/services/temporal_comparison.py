@@ -95,11 +95,25 @@ def _build_trend(history: list[dict[str, Any]], reference_point: dict[str, Any] 
     if reference_point is None or reference_point.get("value") is None:
         return None
 
-    historical_points = [point for point in history if point.get("value") is not None and point.get("date")]
-    if len(historical_points) < 2:
-        return None
+    # Include all valid points with non-null values
+    valid_points = [point for point in history if point.get("value") is not None and point.get("date")]
+    if len(valid_points) < 2:
+        return {
+            "baseline_date": _format_date(valid_points[0]["date"]) if valid_points else None,
+            "baseline_value": valid_points[0].get("value") if valid_points else None,
+            "delta": 0.0,
+            "percent": 0.0,
+            "direction": "flat",
+            "label": "Insufficient history",
+            "slope_per_day": 0.0,
+            "r_squared": None,
+            "observation_count": len(valid_points),
+            "status": "INSUFFICIENT_DATA",
+        }
 
-    baseline_point = historical_points[0]
+    # Sort by date
+    valid_points.sort(key=lambda p: p["date"])
+    baseline_point = valid_points[0]
     baseline_value = baseline_point.get("value")
     current_value = reference_point.get("value")
     if baseline_value is None or current_value is None:
@@ -110,13 +124,37 @@ def _build_trend(history: list[dict[str, Any]], reference_point: dict[str, Any] 
     if baseline_value != 0:
         percent = (delta / abs(baseline_value)) * 100.0
 
+    # Calculate Ordinary Least Squares (OLS) slope over all points
+    t0 = valid_points[0]["date"]
+    xs = [(p["date"] - t0).days for p in valid_points]
+    ys = [float(p["value"]) for p in valid_points]
+    n = len(xs)
+
+    mean_x = sum(xs) / n
+    mean_y = sum(ys) / n
+    ss_xx = sum((x - mean_x) ** 2 for x in xs)
+    ss_xy = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+    ss_yy = sum((y - mean_y) ** 2 for y in ys)
+
+    if ss_xx > 0:
+        slope_per_day = ss_xy / ss_xx
+        r_squared = (ss_xy ** 2) / (ss_xx * ss_yy) if ss_yy > 0 else 0.0
+    else:
+        slope_per_day = 0.0
+        r_squared = 0.0
+
+    if n < 3:
+        status = "LOW_CONFIDENCE_FEW_SAMPLES"
+    else:
+        status = "ADEQUATE"
+
     if percent is None:
         direction = None
         label = "Trend unavailable"
-    elif percent > 2:
+    elif slope_per_day > 0.002 or (percent > 2 and slope_per_day > 0):
         direction = "up"
         label = "Rising"
-    elif percent < -2:
+    elif slope_per_day < -0.002 or (percent < -2 and slope_per_day < 0):
         direction = "down"
         label = "Falling"
     else:
@@ -130,6 +168,10 @@ def _build_trend(history: list[dict[str, Any]], reference_point: dict[str, Any] 
         "percent": percent,
         "direction": direction,
         "label": label,
+        "slope_per_day": float(slope_per_day),
+        "r_squared": float(r_squared) if r_squared is not None else None,
+        "observation_count": n,
+        "status": status,
     }
 
 
