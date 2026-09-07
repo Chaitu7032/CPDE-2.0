@@ -69,6 +69,7 @@ async def create_tables():
         await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS b02 DOUBLE PRECISION"))
         await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS b03 DOUBLE PRECISION"))
         await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS b05 DOUBLE PRECISION"))
+        await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS b8a DOUBLE PRECISION"))
         await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS evi DOUBLE PRECISION"))
         await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS ndre DOUBLE PRECISION"))
         await conn.execute(text("ALTER TABLE IF EXISTS land_daily_indices ADD COLUMN IF NOT EXISTS gci DOUBLE PRECISION"))

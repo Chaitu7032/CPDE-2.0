@@ -53,7 +53,8 @@ BAND_ALIASES: dict[str, tuple[str, ...]] = {
     "SCL": ("SCL", "scl",   "scene-classification", "SCL_20m"),
     "B02": ("B02", "blue",  "BLUE",  "b02",  "blue_10m"),
     "B03": ("B03", "green", "GREEN", "b03",  "green_10m"),
-    "B05": ("B05", "rededge", "REDEDGE", "b05", "rededge_20m"),
+    "B05": ("B05", "rededge", "REDEDGE", "b05", "rededge_20m", "rededge1"),
+    "B8A": ("B8A", "b8a", "narrow_nir", "nir20m", "nir_20m", "narrow-nir"),
 }
 
 
@@ -217,15 +218,29 @@ def _compute_indices_for_points(
     b11_href = _resolve_asset_href(signed_item, "B11")
     scl_href = _resolve_asset_href(signed_item, "SCL")
 
+    # Optional Red-Edge and Narrow-NIR assets
+    b05_href = None
+    b8a_href = None
+    try:
+        b05_href = _resolve_asset_href(signed_item, "B05")
+    except Exception:
+        pass
+    try:
+        b8a_href = _resolve_asset_href(signed_item, "B8A")
+    except Exception:
+        pass
+
     results: List[Dict[str, Any]] = []
 
     logger.info(
-        "Sentinel-2 raster sampling start item=%s points=%d b04=%s b08=%s b11=%s scl=%s",
+        "Sentinel-2 raster sampling start item=%s points=%d b04=%s b08=%s b11=%s b05=%s b8a=%s scl=%s",
         getattr(item, "id", None),
         len(points_lonlat),
         b04_href,
         b08_href,
         b11_href,
+        b05_href,
+        b8a_href,
         scl_href,
     )
 
@@ -236,36 +251,18 @@ def _compute_indices_for_points(
             rasterio.open(b11_href) as b11_src,
             rasterio.open(scl_href) as scl_src,
         ):
-            target_crs = b08_src.crs
-            if target_crs is None:
-                props = item.properties if hasattr(item, "properties") and isinstance(item.properties, dict) else {}
-                proj_code = props.get("proj:code") or props.get("proj:epsg")
-                if proj_code:
-                    target_crs = f"EPSG:{proj_code}" if isinstance(proj_code, int) else str(proj_code)
-                else:
-                    target_crs = "EPSG:32644"
-                logger.info(
-                    "Sentinel-2 using projection fallback item=%s target_crs=%s",
-                    getattr(item, "id", None),
-                    target_crs,
-                )
-
-            logger.info(
-                "Sentinel-2 raster metadata item=%s crs=%s target_crs=%s bounds=%s shape=%sx%s",
-                getattr(item, "id", None),
-                b08_src.crs,
-                target_crs,
-                b08_src.bounds,
-                b08_src.width,
-                b08_src.height,
-            )
-
-            if target_crs is None:
-                raise RuntimeError(
-                    f"Sentinel-2 item {getattr(item, 'id', None)} has no usable CRS metadata"
-                )
-
+            b05_src = rasterio.open(b05_href) if b05_href else None
+            b8a_src = rasterio.open(b8a_href) if b8a_href else None
             try:
+                target_crs = b08_src.crs
+                if target_crs is None:
+                    props = item.properties if hasattr(item, "properties") and isinstance(item.properties, dict) else {}
+                    proj_code = props.get("proj:code") or props.get("proj:epsg")
+                    if proj_code:
+                        target_crs = f"EPSG:{proj_code}" if isinstance(proj_code, int) else str(proj_code)
+                    else:
+                        target_crs = "EPSG:32644"
+
                 transformer = Transformer.from_crs("EPSG:4326", target_crs, always_xy=True)
                 pts_xy = [transformer.transform(lon, lat) for lon, lat in points_lonlat]
 
@@ -274,6 +271,9 @@ def _compute_indices_for_points(
                 swir_vals = list(b11_src.sample(pts_xy, masked=True))
                 scl_vals = list(scl_src.sample(pts_xy, masked=True))
 
+                re1_vals = list(b05_src.sample(pts_xy, masked=True)) if b05_src else None
+                nnir_vals = list(b8a_src.sample(pts_xy, masked=True)) if b8a_src else None
+
                 for idx in range(len(points_lonlat)):
                     red = _safe_sample_val(red_vals[idx], default=np.nan)
                     nir = _safe_sample_val(nir_vals[idx], default=np.nan)
@@ -281,16 +281,23 @@ def _compute_indices_for_points(
                     scl_raw = _safe_sample_val(scl_vals[idx], default=-1.0)
                     scl = int(scl_raw) if np.isfinite(scl_raw) and scl_raw >= 0 else -1
 
+                    re1 = _safe_sample_val(re1_vals[idx], default=np.nan) if re1_vals else np.nan
+                    nnir = _safe_sample_val(nnir_vals[idx], default=np.nan) if nnir_vals else nir
+
                     is_scl_water = scl == 6
                     is_clear = _scl_is_clear(scl) or is_scl_water
 
                     ndvi = None
                     ndmi = None
+                    ndre = None
+                    gci = None
                     evi = None
                     lswi = None
                     b04 = None
                     b08 = None
                     b11 = None
+                    b05 = None
+                    b8a = None
                     pixel_count = 0
                     is_flooded_rice = False
                     quality_flag = "OBSERVED"
@@ -302,13 +309,22 @@ def _compute_indices_for_points(
                         and np.isfinite(swir)
                     ):
                         denom_ndvi = nir + red
-                        denom_ndmi = nir + swir
+                        denom_ndmi = (nnir if np.isfinite(nnir) else nir) + swir
 
                         if denom_ndvi != 0:
                             ndvi = float((nir - red) / denom_ndvi)
                         if denom_ndmi != 0:
-                            ndmi = float((nir - swir) / denom_ndmi)
-                            lswi = ndmi  # LSWI using B08 and B11
+                            ndmi = float(((nnir if np.isfinite(nnir) else nir) - swir) / denom_ndmi)
+                            lswi = ndmi
+
+                        # True NDRE using Red-Edge Band 5 (705nm) and Narrow NIR Band 8A (865nm)
+                        if np.isfinite(re1):
+                            target_nir = nnir if np.isfinite(nnir) else nir
+                            denom_ndre = target_nir + re1
+                            if denom_ndre != 0:
+                                ndre = float((target_nir - re1) / denom_ndre)
+                            if re1 > 0:
+                                gci = float((target_nir / re1) - 1.0)
 
                         # 2-band EVI calculation (Jiang et al. 2008)
                         denom_evi = nir + 2.4 * red + 1.0
@@ -316,15 +332,12 @@ def _compute_indices_for_points(
                             evi = float(2.5 * (nir - red) / denom_evi)
 
                         # Research-grade flooded rice classification (Xiao et al. 2005, 2006)
-                        # Paddies during transplanting/flooding show LSWI + 0.05 >= min(NDVI, EVI)
                         if lswi is not None and ndvi is not None:
                             min_veg = min(ndvi, evi) if evi is not None else ndvi
                             if (lswi + 0.05) >= min_veg:
                                 is_flooded_rice = True
                                 quality_flag = "FLOODED_RICE"
 
-                        # If SCL flagged water but spectral indices show valid surface reflectance
-                        # on cropland, retain observation and flag as flooded rice
                         if is_scl_water:
                             is_flooded_rice = True
                             quality_flag = "FLOODED_RICE"
@@ -333,14 +346,20 @@ def _compute_indices_for_points(
                         b04 = float(red)
                         b08 = float(nir)
                         b11 = float(swir)
+                        b05 = float(re1) if np.isfinite(re1) else None
+                        b8a = float(nnir) if np.isfinite(nnir) else None
 
                     results.append(
                         {
                             "b04": b04,
                             "b08": b08,
                             "b11": b11,
+                            "b05": b05,
+                            "b8a": b8a,
                             "ndvi": ndvi,
                             "ndmi": ndmi,
+                            "ndre": ndre,
+                            "gci": gci,
                             "evi": evi,
                             "lswi": lswi,
                             "pixel_count": pixel_count,
@@ -358,6 +377,11 @@ def _compute_indices_for_points(
                 raise RuntimeError(
                     f"Sentinel-2 reprojection failed for item {getattr(item, 'id', None)}: {exc}"
                 ) from exc
+            finally:
+                if b05_src:
+                    b05_src.close()
+                if b8a_src:
+                    b8a_src.close()
 
     return results
 

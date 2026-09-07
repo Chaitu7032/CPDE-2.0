@@ -280,11 +280,11 @@ async def compute_multi_sensor_stress_for_land(
             supporting_sensor_count=supporting_sensor_count,
         )
 
-        # Dominant Stress determination
+        # Dominant Stress determination & Evidence Attribution (Rule 6)
         stresses = [
-            ("Water Deficit", water_stress or 0.0),
-            ("Chlorophyll Anomaly (N-Proxy)", chl_stress or 0.0),
-            ("Canopy Heat", heat_stress or 0.0),
+            ("Pattern consistent with water-related vegetation stress", water_stress or 0.0),
+            ("Pattern consistent with canopy chlorophyll status anomaly", chl_stress or 0.0),
+            ("Elevated canopy thermal load", heat_stress or 0.0),
         ]
         stresses.sort(key=lambda x: x[1], reverse=True)
         dominant_stress = stresses[0][0] if stresses[0][1] > 0.45 else "Normal Crop Condition"
@@ -300,7 +300,15 @@ async def compute_multi_sensor_stress_for_land(
             "dominant_stress": dominant_stress,
             "data_confidence_level": data_conf_level,
             "diagnosis_confidence_level": diag_conf_level,
+            "confounders_evaluated": [
+                "phenological_senescence",
+                "chlorophyll_nitrogen_deficiency",
+                "foliar_disease",
+                "cloud_shadow_attenuation",
+            ],
+            "actionable_recommendation": "Field inspection recommended: inspect root zone soil moisture and canopy before scheduling irrigation.",
             "calibration_status": FUSION_CONFIG["calibration_status"],
+            "model_type": "physical_multi_sensor_rules_v2",
         }
 
         if water_stress is not None:

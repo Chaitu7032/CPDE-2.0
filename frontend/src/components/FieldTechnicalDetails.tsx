@@ -225,26 +225,30 @@ export default function FieldTechnicalDetails({ geometry }: FieldTechnicalDetail
               </div>
 
               <div className="rounded-md border border-gray-200 p-2">
-                <div className="font-medium text-gray-700">Satellite Pixel Coverage (Estimate)</div>
-                <div className="mt-1 grid grid-cols-1 gap-1 sm:grid-cols-2">
+                <div className="font-medium text-gray-700">Satellite Pixel Coverage & Spatial Provenance</div>
+                <div className="mt-1 grid grid-cols-1 gap-1 sm:grid-cols-2 text-xs">
                   <div className="text-gray-700">
-                    Sentinel-2 (10m): ~{formatIntegerLike(details.pixel_coverage.sentinel2_10m?.estimated_pixels_area_based_ceiling ?? null)} pixels
+                    • 10m Analysis Grid: ~{formatIntegerLike(details.pixel_coverage.sentinel2_10m?.estimated_pixels_area_based_ceiling ?? null)} cells
                   </div>
                   <div className="text-gray-700">
-                    Sentinel-2 upper bound (bbox): {formatIntegerLike(details.pixel_coverage.sentinel2_10m?.estimated_pixels_bbox_based_upper_bound ?? null)} pixels
+                    • Bounding-Box Upper Bound: {formatIntegerLike(details.pixel_coverage.sentinel2_10m?.estimated_pixels_bbox_based_upper_bound ?? null)} pixels
                   </div>
                   <div className="text-gray-700">
-                    MODIS (1000m): ~{formatIntegerLike(details.pixel_coverage.modis_1000m?.estimated_pixels_area_based_ceiling ?? null)} pixels
+                    • Native Optical (NDVI, SAVI): 10m (B04, B08)
                   </div>
                   <div className="text-gray-700">
-                    MODIS upper bound (bbox): {formatIntegerLike(details.pixel_coverage.modis_1000m?.estimated_pixels_bbox_based_upper_bound ?? null)} pixels
+                    • 20m Resampled (NDMI, NDRE): 20m source → 10m grid (Bilinear)
+                  </div>
+                  <div className="text-gray-700">
+                    • Landsat 8/9 LST: 30m product grid (100m native TIRS)
+                  </div>
+                  <div className="text-gray-700">
+                    • Sentinel-1 SAR: 10m C-Band GRD backscatter
                   </div>
                 </div>
-                {details.pixel_coverage.notes?.length > 0 && (
-                  <div className="mt-2 rounded bg-gray-50 p-2 text-xs text-gray-600">
-                    {details.pixel_coverage.notes.join(' ')}
-                  </div>
-                )}
+                <div className="mt-2 rounded bg-blue-50 border border-blue-200 p-2 text-xs text-blue-900">
+                  <span className="font-medium">Spatial Reporting Note:</span> The 10-m grid is the common spatial reporting grid. Native 10-m observations are directly aligned; coarser-resolution products are explicitly resampled or aggregated with native resolution retained in provenance metadata.
+                </div>
               </div>
 
               {details.warnings?.length > 0 && (

@@ -17,9 +17,9 @@ export const CPDE_SCALES = {
   ],
   ndre: [
     { range: '< 0.15', label: 'Acute Chlorophyll Deficit', color: '#991b1b' },
-    { range: '0.15 - 0.28', label: 'Early Nitrogen Stress', color: '#c2410c' },
+    { range: '0.15 - 0.28', label: 'Potential Canopy Stress', color: '#c2410c' },
     { range: '0.28 - 0.42', label: 'Moderate Vigor', color: '#d97706' },
-    { range: '0.42 - 0.55', label: 'Healthy Nitrogen Status', color: '#16a34a' },
+    { range: '0.42 - 0.55', label: 'Healthy Red Edge', color: '#16a34a' },
     { range: '>= 0.55', label: 'Optimal Chlorophyll', color: '#166534' },
   ],
   evi: [
@@ -38,9 +38,9 @@ export const CPDE_SCALES = {
   ],
   gci: [
     { range: '< 1.0', label: 'Severe Chlorosis', color: '#dc2626' },
-    { range: '1.0 - 2.5', label: 'Low Chlorophyll', color: '#f97316' },
-    { range: '2.5 - 4.5', label: 'Moderate Chlorophyll', color: '#ca8a04' },
-    { range: '4.5 - 6.5', label: 'Strong Chlorophyll', color: '#16a34a' },
+    { range: '1.0 - 2.5', label: 'Low Chlorophyll Status', color: '#f97316' },
+    { range: '2.5 - 4.5', label: 'Moderate Status', color: '#ca8a04' },
+    { range: '4.5 - 6.5', label: 'Strong Status', color: '#16a34a' },
     { range: '>= 6.5', label: 'Optimum Peak', color: '#15803d' },
   ],
   lst: [
@@ -48,6 +48,22 @@ export const CPDE_SCALES = {
     { range: '25 - 30°C', label: 'Normal Thermal Range', color: '#16a34a' },
     { range: '30 - 35°C', label: 'Elevated Heat', color: '#f59e0b' },
     { range: '>= 35°C', label: 'Hot Thermal Stress', color: '#dc2626' },
+  ],
+  sar: [
+    { range: '< -18 dB', label: 'Low Backscatter / Dry / Flooded', color: '#dc2626' },
+    { range: '-18 to -12 dB', label: 'Moderate Backscatter', color: '#f59e0b' },
+    { range: '>= -12 dB', label: 'High Canopy Scattering', color: '#16a34a' },
+  ],
+  stress_prob: [
+    { range: '< 0.30', label: 'Low Stress (Nominal)', color: '#16a34a' },
+    { range: '0.30 - 0.60', label: 'Watch / Moderate', color: '#eab308' },
+    { range: '0.60 - 0.80', label: 'Elevated Stress', color: '#f97316' },
+    { range: '>= 0.80', label: 'High Stress Anomaly', color: '#dc2626' },
+  ],
+  uncertainty: [
+    { range: 'High QA (>80%)', label: 'High Quality Observation', color: '#16a34a' },
+    { range: 'Med QA (50-80%)', label: 'Moderate Quality', color: '#f59e0b' },
+    { range: 'Low QA (<50%)', label: 'High Uncertainty / Gaps', color: '#7f1d1d' },
   ],
 }
 
@@ -99,45 +115,58 @@ export function getColorForValue(indexKey, value) {
     if (value < 35) return scale[2].color
     return scale[3].color
   }
+  if (indexKey === 'sar') {
+    if (value < -18.0) return scale[0].color
+    if (value < -12.0) return scale[1].color
+    return scale[2].color
+  }
+  if (indexKey === 'stress_prob') {
+    if (value < 0.30) return scale[0].color
+    if (value < 0.60) return scale[1].color
+    if (value < 0.80) return scale[2].color
+    return scale[3].color
+  }
+  if (indexKey === 'uncertainty') {
+    if (value >= 80.0) return scale[0].color
+    if (value >= 50.0) return scale[1].color
+    return scale[2].color
+  }
   return '#808080'
 }
 
-function renderScaleCard(title, scale) {
+export default function ScientificLegend({ activeIndex = 'ndvi', onOpenTraceability }) {
+  const scale = CPDE_SCALES[activeIndex.toLowerCase()] || CPDE_SCALES.ndvi
+
   return (
-    <div className="rounded-md border border-slate-200 bg-white p-3 shadow-sm">
-      <div className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-800">{title}</div>
-      <div className="space-y-1.5 text-xs text-slate-700">
-        {scale.map((step) => (
-          <div key={`${title}-${step.range}`} className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <span className="inline-block h-3 w-3 rounded-sm shadow-sm" style={{ backgroundColor: step.color }} />
-              <span className="font-mono">{step.range}</span>
+    <div className="rounded-xl border border-slate-200 bg-white/95 p-3 shadow-md backdrop-blur-xs">
+      <div className="flex items-center justify-between border-b pb-2">
+        <span className="text-xs font-bold uppercase tracking-wider text-slate-700">
+          Scale: {activeIndex.toUpperCase()}
+        </span>
+        {onOpenTraceability && (
+          <button
+            onClick={() => onOpenTraceability(activeIndex)}
+            className="flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700 hover:bg-slate-200"
+            title="Inspect Peer-Reviewed Formulation"
+          >
+            Traceability ↗
+          </button>
+        )}
+      </div>
+
+      <div className="mt-2 space-y-1">
+        {scale.map((item, idx) => (
+          <div key={idx} className="flex items-center justify-between gap-3 text-[11px]">
+            <div className="flex items-center gap-1.5">
+              <span
+                className="h-2.5 w-2.5 rounded-xs border border-black/10"
+                style={{ backgroundColor: item.color }}
+              />
+              <span className="font-mono text-slate-600">{item.range}</span>
             </div>
-            <span className="text-[11px] font-medium text-slate-600">{step.label}</span>
+            <span className="text-right font-medium text-slate-700">{item.label}</span>
           </div>
         ))}
-      </div>
-    </div>
-  )
-}
-
-export default function ScientificLegend({ ndvi, ndmi, lst, risk, colorScales, activeMode = 'ndvi' }) {
-  return (
-    <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="text-sm font-bold text-slate-800">Scientific Classification Palettes</h3>
-          <p className="text-xs text-slate-600">Calibrated biophysical thresholds based on peer-reviewed remote sensing literature.</p>
-        </div>
-      </div>
-
-      <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {renderScaleCard('NDVI (Canopy Biomass)', CPDE_SCALES.ndvi)}
-        {renderScaleCard('NDMI (Moisture Content)', CPDE_SCALES.ndmi)}
-        {renderScaleCard('NDRE (Red Edge / Nitrogen)', CPDE_SCALES.ndre)}
-        {renderScaleCard('EVI (Enhanced Vegetation)', CPDE_SCALES.evi)}
-        {renderScaleCard('SAVI (Soil-Adjusted)', CPDE_SCALES.savi)}
-        {renderScaleCard('GCI (Green Chlorophyll)', CPDE_SCALES.gci)}
       </div>
     </div>
   )

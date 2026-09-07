@@ -70,8 +70,14 @@ class LandDailyIndex(Base):
 	b04 = Column(Float, nullable=True)
 	b08 = Column(Float, nullable=True)
 	b11 = Column(Float, nullable=True)
+	b05 = Column(Float, nullable=True)
+	b8a = Column(Float, nullable=True)
 	ndvi = Column(Float, nullable=True)
 	ndmi = Column(Float, nullable=True)
+	ndre = Column(Float, nullable=True)
+	gci = Column(Float, nullable=True)
+	evi = Column(Float, nullable=True)
+	lswi = Column(Float, nullable=True)
 	pixel_count = Column(Integer, nullable=True)
 
 	def __repr__(self) -> str:  # pragma: no cover - simple repr

@@ -90,23 +90,23 @@ def generate_explainable_recommendation(
     headline = "Optimal Crop Biophysical Condition"
     summary_parts: list[str] = []
 
-    # 1. Early Red-Edge Chlorophyll / Nitrogen Stress (NDRE dropping before NDVI)
+    # 1. Early Red-Edge Chlorophyll / Canopy Stress (NDRE dropping relative to baseline)
     if ndre is not None and ndre < 0.28:
         severity = "warning"
-        summary_parts.append("Early canopy nitrogen or chlorophyll deficit detected via Red Edge band.")
+        summary_parts.append("Potential canopy chlorophyll/nitrogen status anomaly indicated by Red-Edge index (NDRE).")
         evidence_list.append(
             EvidenceItem(
                 metric="NDRE (Normalized Difference Red Edge)",
                 observed_value=f"{ndre:.3f}",
-                baseline_value=">= 0.42 (Healthy)",
+                baseline_value=">= 0.40 (Healthy)",
                 anomaly_magnitude="Deficit (-25%)",
-                sensor_or_source="Sentinel-2 Band B05 (705nm) & B08 (842nm)",
+                sensor_or_source="Sentinel-2 Band B05 (705nm) & B8A (865nm, 20m resampled to 10m)",
                 observation_date=observation_date,
-                scientific_rationale="Chlorophyll degradation in upper mesophyll reduces red-edge reflectance 5-8 days before visible canopy yellowing manifests in conventional NDVI.",
+                scientific_rationale="Red-edge vegetation signal decrease relative to field baseline indicates potential canopy chlorophyll variation or early stress. Confounders: soil moisture stress, foliar disease, natural phenological transition.",
             )
         )
-        actions.append("Perform targeted soil nitrogen/fertility testing in the flagged parcel zones.")
-        actions.append("Inspect crop foliage for subtle interveinal pale-green coloration.")
+        actions.append("Conduct field visual check for pale-green coloration or leaf symptoms.")
+        actions.append("Verify soil fertility and recent nutrient application logs before intervention.")
 
     # 2. Moisture Deficit & High Evaporative Demand (NDMI + VPD)
     if ndmi is not None and ndmi < 0.00:

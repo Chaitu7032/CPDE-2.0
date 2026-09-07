@@ -10,6 +10,8 @@ VARIABLE_SOURCES: dict[str, dict] = {
     # Grid-level (per grid_id)
     "ndvi": {"table": "land_daily_indices", "value_col": "ndvi", "pixel_count_col": "pixel_count", "level": "grid"},
     "ndmi": {"table": "land_daily_indices", "value_col": "ndmi", "pixel_count_col": "pixel_count", "level": "grid"},
+    "ndre": {"table": "land_daily_indices", "value_col": "ndre", "pixel_count_col": "pixel_count", "level": "grid"},
+    "gci": {"table": "land_daily_indices", "value_col": "gci", "pixel_count_col": "pixel_count", "level": "grid"},
     "evi": {"table": "land_daily_indices", "value_col": "evi", "pixel_count_col": "pixel_count", "level": "grid"},
     "lswi": {"table": "land_daily_indices", "value_col": "lswi", "pixel_count_col": "pixel_count", "level": "grid"},
     "lst": {"table": "land_daily_lst", "value_col": "lst_c", "pixel_count_col": None, "level": "grid"},

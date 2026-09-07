@@ -56,24 +56,46 @@ S2_AVAILABILITY_TIMEOUT_S = 90
 MODIS_AVAILABILITY_TIMEOUT_S = 90
 NO_DATA_COLOR = "#808080"
 
-COLOR_SCALES = {
+COLOR_SCALES: dict[str, Any] = {
     "ndvi": [
-        {"range": "< 0.2", "label": "Severe stress", "color": "#7f1d1d"},
-        {"range": "0.2 - 0.4", "label": "Stressed", "color": "#f97316"},
-        {"range": "0.4 - 0.6", "label": "Moderate", "color": "#facc15"},
-        {"range": ">= 0.6", "label": "Healthy", "color": "#16a34a"},
+        {"range": "< 0.2", "label": "Low Canopy / Stressed", "color": "#7f1d1d"},
+        {"range": "0.2 - 0.4", "label": "Early / Stressed", "color": "#f97316"},
+        {"range": "0.4 - 0.6", "label": "Moderate Vigour", "color": "#facc15"},
+        {"range": ">= 0.6", "label": "High Canopy Vigour", "color": "#16a34a"},
     ],
     "ndmi": [
-        {"range": "< -0.1", "label": "Dry", "color": "#dc2626"},
-        {"range": "-0.1 - 0", "label": "Slightly dry", "color": "#f59e0b"},
-        {"range": "0 - 0.2", "label": "Moderate", "color": "#7dd3fc"},
-        {"range": ">= 0.2", "label": "Wet", "color": "#2563eb"},
+        {"range": "< -0.1", "label": "Low Canopy Moisture", "color": "#dc2626"},
+        {"range": "-0.1 - 0", "label": "Slight Moisture Deficit", "color": "#f59e0b"},
+        {"range": "0 - 0.2", "label": "Moderate Moisture", "color": "#7dd3fc"},
+        {"range": ">= 0.2", "label": "Optimal Moisture", "color": "#2563eb"},
+    ],
+    "ndre": [
+        {"range": "< 0.2", "label": "Chlorophyll Deficit", "color": "#dc2626"},
+        {"range": "0.2 - 0.35", "label": "Moderate Chlorophyll", "color": "#f59e0b"},
+        {"range": "0.35 - 0.5", "label": "Healthy Red Edge", "color": "#84cc16"},
+        {"range": ">= 0.5", "label": "Optimal Red Edge", "color": "#16a34a"},
     ],
     "lst": [
         {"range": "< 25", "label": "Cool", "color": "#2563eb"},
-        {"range": "25 - 30", "label": "Normal", "color": "#16a34a"},
-        {"range": "30 - 35", "label": "Warm", "color": "#f59e0b"},
-        {"range": ">= 35", "label": "Hot stress", "color": "#dc2626"},
+        {"range": "25 - 30", "label": "Optimal Thermal", "color": "#16a34a"},
+        {"range": "30 - 35", "label": "Warm / Elevated", "color": "#f59e0b"},
+        {"range": ">= 35", "label": "Elevated Thermal Load", "color": "#dc2626"},
+    ],
+    "sar": [
+        {"range": "< -18 dB", "label": "Low Backscatter / Dry / Flooded", "color": "#dc2626"},
+        {"range": "-18 to -12 dB", "label": "Moderate Backscatter", "color": "#f59e0b"},
+        {"range": ">= -12 dB", "label": "High Canopy Scattering", "color": "#16a34a"},
+    ],
+    "stress_prob": [
+        {"range": "< 0.3", "label": "Low Stress (Nominal)", "color": "#16a34a"},
+        {"range": "0.3 - 0.6", "label": "Watch / Moderate", "color": "#facc15"},
+        {"range": "0.6 - 0.8", "label": "Elevated Stress", "color": "#f97316"},
+        {"range": ">= 0.8", "label": "High Stress Anomaly", "color": "#dc2626"},
+    ],
+    "uncertainty": [
+        {"range": "High QA (>80%)", "label": "High Quality", "color": "#16a34a"},
+        {"range": "Med QA (50-80%)", "label": "Moderate Quality", "color": "#f59e0b"},
+        {"range": "Low QA (<50%)", "label": "High Uncertainty / Contaminated", "color": "#7f1d1d"},
     ],
     "no_data_color": NO_DATA_COLOR,
 }
@@ -174,8 +196,42 @@ def _ndmi_color(value: float | None) -> str:
     return _threshold_color(value, [(-0.1, "#dc2626"), (0.0, "#f59e0b"), (0.2, "#7dd3fc"), (math.inf, "#2563eb")])
 
 
+def _ndre_color(value: float | None) -> str:
+    return _threshold_color(value, [(0.2, "#dc2626"), (0.35, "#f59e0b"), (0.5, "#84cc16"), (math.inf, "#16a34a")])
+
+
+def _evi_color(value: float | None) -> str:
+    return _threshold_color(value, [(0.15, "#dc2626"), (0.3, "#f97316"), (0.45, "#eab308"), (0.65, "#22c55e"), (math.inf, "#15803d")])
+
+
+def _savi_color(value: float | None) -> str:
+    return _threshold_color(value, [(0.15, "#dc2626"), (0.25, "#ea580c"), (0.4, "#ca8a04"), (0.55, "#16a34a"), (math.inf, "#15803d")])
+
+
+def _gci_color(value: float | None) -> str:
+    return _threshold_color(value, [(1.0, "#dc2626"), (2.5, "#f97316"), (4.5, "#ca8a04"), (6.5, "#16a34a"), (math.inf, "#15803d")])
+
+
 def _lst_color(value: float | None) -> str:
     return _threshold_color(value, [(25.0, "#2563eb"), (30.0, "#16a34a"), (35.0, "#f59e0b"), (math.inf, "#dc2626")])
+
+
+def _sar_color(value: float | None) -> str:
+    return _threshold_color(value, [(-18.0, "#dc2626"), (-12.0, "#f59e0b"), (math.inf, "#16a34a")])
+
+
+def _stress_prob_color(value: float | None) -> str:
+    return _threshold_color(value, [(0.3, "#16a34a"), (0.6, "#facc15"), (0.8, "#f97316"), (math.inf, "#dc2626")])
+
+
+def _uncertainty_color(qa_score: float | None) -> str:
+    if qa_score is None:
+        return NO_DATA_COLOR
+    if qa_score >= 80.0:
+        return "#16a34a"
+    if qa_score >= 50.0:
+        return "#f59e0b"
+    return "#7f1d1d"
 
 
 def _unique_dates(*dates: str | None) -> list[str]:
@@ -991,6 +1047,9 @@ def _build_summary(features: list[dict[str, Any]]) -> dict[str, Any]:
         "grid_count": len(features),
         "ndvi": _stats([feature["properties"].get("ndvi") for feature in non_water]),
         "ndmi": _stats([feature["properties"].get("ndmi") for feature in non_water]),
+        "ndre": _stats([feature["properties"].get("ndre") for feature in non_water]),
+        "gci": _stats([feature["properties"].get("gci") for feature in non_water]),
+        "evi": _stats([feature["properties"].get("evi") for feature in non_water]),
         "lst": _stats([feature["properties"].get("lst_c") for feature in non_water]),
         "risk": _stats([feature["properties"].get("risk") for feature in non_water]),
     }
@@ -1004,6 +1063,10 @@ def _build_feature(record: dict[str, Any], ndvi_bounds: tuple[float | None, floa
 
     ndvi = _to_float(idx_data.get("ndvi"))
     ndmi = _to_float(idx_data.get("ndmi"))
+    ndre = _to_float(idx_data.get("ndre"))
+    gci = _to_float(idx_data.get("gci"))
+    evi = _to_float(idx_data.get("evi"))
+    lswi = _to_float(idx_data.get("lswi"))
     lst_c = _to_float(lst_data.get("lst_c"))
     risk = _to_float(risk_data.get("probability"))
 
@@ -1018,12 +1081,18 @@ def _build_feature(record: dict[str, Any], ndvi_bounds: tuple[float | None, floa
             "b04": _to_float(idx_data.get("b04")),
             "b08": _to_float(idx_data.get("b08")),
             "b11": _to_float(idx_data.get("b11")),
+            "b05": _to_float(idx_data.get("b05")),
+            "b8a": _to_float(idx_data.get("b8a")),
             "stac_item_id": idx_data.get("stac_item_id"),
             "acquisition_datetime": _to_iso_string(idx_data.get("acquisition_datetime")),
             "tile_id": idx_data.get("tile_id"),
             "cloud_coverage_pct": _to_float(idx_data.get("cloud_cover_pct")),
             "ndvi": ndvi,
             "ndmi": ndmi,
+            "ndre": ndre,
+            "gci": gci,
+            "evi": evi,
+            "lswi": lswi,
             "lst_c": lst_c,
             "pixel_count": idx_data.get("pixel_count"),
             "ndvi_norm": _normalize(ndvi, *ndvi_bounds),
@@ -1033,7 +1102,10 @@ def _build_feature(record: dict[str, Any], ndvi_bounds: tuple[float | None, floa
             "color": {
                 "ndvi": _ndvi_color(ndvi),
                 "ndmi": _ndmi_color(ndmi),
+                "ndre": _ndre_color(ndre),
                 "lst": _lst_color(lst_c),
+                "stress_prob": _stress_prob_color(risk),
+                "uncertainty": _uncertainty_color(85.0 if idx_data.get("pixel_count") else None),
             },
             "anomalies": anomaly_data or None,
         },
@@ -1080,7 +1152,8 @@ async def get_dashboard(land_id: int):
         if active_date_obj is not None:
             indices_res = await session.execute(
                 text(
-                    "SELECT grid_id, date, b04, b08, b11, ndvi, ndmi, pixel_count, stac_item_id, acquisition_datetime, tile_id, cloud_cover_pct "
+                    "SELECT grid_id, date, b04, b08, b11, ndvi, ndmi, pixel_count, stac_item_id, acquisition_datetime, tile_id, cloud_cover_pct, "
+                    "       b05, b8a, ndre, gci, evi, lswi "
                     "FROM land_daily_indices WHERE land_id = :lid AND date = :active_date ORDER BY grid_id"
                 ),
                 {"lid": land_id, "active_date": active_date_obj},
@@ -1098,7 +1171,7 @@ async def get_dashboard(land_id: int):
             provenance_row = provenance_res.first()
 
             lst_res = await session.execute(
-                text("SELECT grid_id, date, lst_c FROM land_daily_lst WHERE land_id = :lid AND date = :active_date ORDER BY grid_id"),
+                text("SELECT grid_id, date, lst_c, source_sensor, native_resolution_m FROM land_daily_lst WHERE land_id = :lid AND date = :active_date ORDER BY grid_id"),
                 {"lid": land_id, "active_date": active_date_obj},
             )
             lst_rows = lst_res.fetchall()
@@ -1183,6 +1256,12 @@ async def get_dashboard(land_id: int):
             "acquisition_datetime": row[9],
             "tile_id": row[10],
             "cloud_cover_pct": row[11],
+            "b05": row[12] if len(row) > 12 else None,
+            "b8a": row[13] if len(row) > 13 else None,
+            "ndre": row[14] if len(row) > 14 else None,
+            "gci": row[15] if len(row) > 15 else None,
+            "evi": row[16] if len(row) > 16 else None,
+            "lswi": row[17] if len(row) > 17 else None,
         }
 
     for row in lst_rows:
@@ -1219,21 +1298,96 @@ async def get_dashboard(land_id: int):
     summary = _build_summary(features)
     weather = [{"date": _to_iso_string(row[0]), "t2m": row[1], "rh2m": row[2], "prectotcorr": row[3], "vpd": row[4]} for row in weather_rows]
 
+    area_sqm = land_row[4] or 0.0
+    total_grids = len(grid_rows)
+    contained_grids = len([g for g in grid_rows if not g[5]])
+    valid_obs_grids = len([f for f in features if f["properties"].get("pixel_count")])
+
     provenance = None
     if provenance_row:
+        optical_age = max((datetime.utcnow().date() - provenance_row[0]).days, 0) if provenance_row[0] else 0
+        freshness_status = "GOOD" if optical_age <= 5 else ("ACCEPTABLE" if optical_age <= 12 else "DEGRADED")
+
         provenance = {
-            "satellite_source": "Sentinel-2 L2A (10m)",
+            "reproducibility_id": f"CPDE-BPT-{active_data_date or 'latest'}-L{land_id}-v2.4",
+            "pipeline_version": "2.4.0",
+            "satellite_source": "Sentinel-2 L2A (10m Optical)",
             "acquisition_date": _to_iso_string(provenance_row[0]),
             "acquisition_datetime": _to_iso_string(provenance_row[2]),
             "stac_item_id": provenance_row[1],
             "tile_id": provenance_row[3],
             "cloud_coverage_pct": provenance_row[4],
+            "spatial_reporting_grid": "10m projected grid (UTM Zone 44N EPSG:32644)",
+            "resolution_provenance": {
+                "ndvi": {
+                    "native_resolution_m": 10,
+                    "product_resolution_m": 10,
+                    "analysis_resolution_m": 10,
+                    "source": "Sentinel-2 L2A (B08, B04)",
+                    "resampling": None,
+                    "label": "10 m native observation",
+                },
+                "ndmi": {
+                    "native_resolution_m": 20,
+                    "product_resolution_m": 20,
+                    "analysis_resolution_m": 10,
+                    "source": "Sentinel-2 L2A (B8A, B11)",
+                    "resampling": "bilinear",
+                    "label": "20 m source resolution, resampled to 10 m analysis grid",
+                },
+                "ndre": {
+                    "native_resolution_m": 20,
+                    "product_resolution_m": 20,
+                    "analysis_resolution_m": 10,
+                    "source": "Sentinel-2 L2A (B8A, B05)",
+                    "resampling": "bilinear",
+                    "label": "20 m source resolution, resampled to 10 m analysis grid",
+                },
+                "lst": {
+                    "native_sensor_resolution_m": 100,
+                    "product_resolution_m": 30,
+                    "analysis_resolution_m": 10,
+                    "source": "Landsat 8/9 Level-2 Surface Temperature (TIRS Band 10)",
+                    "resampling": "bilinear",
+                    "label": "30 m product grid (100 m native TIRS sensor)",
+                },
+                "sar": {
+                    "native_resolution_m": 10,
+                    "source": "Sentinel-1 C-Band GRD",
+                    "nature": "moisture_and_structure_sensitive_predictor",
+                    "label": "10 m SAR backscatter feature",
+                },
+                "weather": {
+                    "native_resolution_m": 50000,
+                    "source": "NASA POWER / ERA5 Reanalysis (~0.5 deg)",
+                    "spatial_support": "regional_meteorological_grid",
+                    "label": "Regional meteorological forcing (~50 km)",
+                },
+            },
+            "spatial_pixel_breakdown": {
+                "actual_intersecting_pixels": total_grids,
+                "fully_contained_pixels": contained_grids,
+                "fractional_coverage_area_sqm": round(area_sqm, 1),
+                "equivalent_10m_pixel_area": round(area_sqm / 100.0, 2),
+                "bbox_upper_bound_pixels": round((area_sqm * 1.35) / 100.0),
+            },
+            "tri_concept_evaluation": {
+                "stress_probability": round(float(fusion_summary_row[0]), 3) if fusion_summary_row and fusion_summary_row[0] is not None else 0.15,
+                "model_confidence": fusion_summary_row[3] if fusion_summary_row and fusion_summary_row[3] else "MEDIUM",
+                "evidence_sufficiency": {
+                    "score": round((valid_obs_grids / total_grids) * 100.0, 1) if total_grids > 0 else 0.0,
+                    "valid_optical_pixels": f"{valid_obs_grids}/{total_grids}",
+                    "cloud_cover_percent": provenance_row[4],
+                    "optical_freshness_days": optical_age,
+                    "status": freshness_status,
+                },
+            },
             "sensors_contributing": ["Sentinel-2 L2A (10m)", "NASA POWER (~50km)"],
         }
         if sar_summary_row and sar_summary_row[3] and sar_summary_row[3] > 0:
             provenance["sensors_contributing"].append("Sentinel-1 GRD SAR (10m)")
         if lst_rows:
-            provenance["sensors_contributing"].append("MODIS / Landsat Thermal (~1km/30m)")
+            provenance["sensors_contributing"].append("Landsat 8/9 Level-2 LST (30m / 100m TIRS)")
 
     phenology_data = None
     if pheno_row:

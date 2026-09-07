@@ -35,9 +35,20 @@ type DashboardData = {
         row: number | null
         col: number | null
         is_water: boolean
+        b02?: number | null
+        b03?: number | null
         b04: number | null
+        b05?: number | null
         b08: number | null
+        b8a?: number | null
         b11: number | null
+        ndre?: number | null
+        evi?: number | null
+        savi?: number | null
+        gci?: number | null
+        sar_vv_db?: number | null
+        sar_vh_db?: number | null
+        sar_cr?: number | null
         stac_item_id: string | null
         acquisition_datetime: string | null
         tile_id: string | null
@@ -50,6 +61,8 @@ type DashboardData = {
         ndmi_norm: number | null
         lst_norm: number | null
         risk: number | null
+        stress_prob?: number | null
+        qa_score?: number | null
         color: {
           ndvi: string
           ndmi: string
@@ -77,6 +90,7 @@ type DashboardData = {
     grid_count: number
     ndvi: { mean: number; min: number; max: number; count: number } | null
     ndmi: { mean: number; min: number; max: number; count: number } | null
+    ndre?: { mean: number; min: number; max: number; count: number } | null
     lst: { mean: number; min: number; max: number; count: number } | null
     risk: { mean: number; min: number; max: number; count: number } | null
   }
@@ -90,7 +104,7 @@ type DashboardData = {
   }
 }
 
-type ColorMode = 'ndvi' | 'ndmi' | 'ndre' | 'evi' | 'savi' | 'gci' | 'lst' | 'risk'
+type ColorMode = 'ndvi' | 'ndmi' | 'ndre' | 'evi' | 'savi' | 'gci' | 'lst' | 'sar' | 'stress_prob' | 'uncertainty' | 'risk'
 type Persona = 'farmer' | 'researcher'
 type DashboardTab = 'dashboard' | 'grid-inspector' | 'evidence' | 'validation' | 'methodology' | 'available-data' | 'temporal-analysis'
 
@@ -254,8 +268,12 @@ export default function Dashboard() {
       fillColor = getColorForValue('gci', gci)
     } else if (colorMode === 'lst') {
       fillColor = getColorForValue('lst', props.lst_c)
-    } else if (colorMode === 'risk') {
-      fillColor = riskColor(props.risk)
+    } else if (colorMode === 'sar') {
+      fillColor = getColorForValue('sar', props.sar_vh_db ?? props.sar_vv_db ?? null)
+    } else if (colorMode === 'stress_prob' || colorMode === 'risk') {
+      fillColor = getColorForValue('stress_prob', props.risk ?? props.stress_prob ?? null)
+    } else if (colorMode === 'uncertainty') {
+      fillColor = getColorForValue('uncertainty', props.qa_score ?? 100)
     }
 
     if (isHovered) {
@@ -372,19 +390,31 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-4">
-      {/* Header with Dual Persona Switcher */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
         <div>
           <div className="flex items-center gap-2">
-            <span className="rounded bg-emerald-100 px-2 py-0.5 text-xs font-bold text-emerald-800">
-              CPDE v2 Engine
+            <span className="rounded-md bg-emerald-100 px-2 py-0.5 text-xs font-bold text-emerald-800">
+              CPDE 2.0 Engine
             </span>
-            <h1 className="text-xl font-bold text-slate-800">Precision Field Cockpit</h1>
+            <h1 className="text-xl font-bold text-slate-800">Near-Real-Time Satellite Crop Monitoring & Decision Support</h1>
           </div>
           <p className="mt-0.5 text-xs text-slate-600">
             {land.farmer_name} {land.crop_type ? `· Crop: ${land.crop_type}` : ''} · Field #{land.land_id}
             {land.area_sqm ? ` · Area: ${(land.area_sqm / 10000).toFixed(2)} ha (${Math.round(land.area_sqm).toLocaleString()} m²)` : ''}
+            <span className="ml-2 text-emerald-700 font-medium">Bapatla District, AP Validation Site</span>
           </p>
+          <div className="mt-1 flex items-center gap-1 text-[11px] font-mono text-slate-500">
+            <span>Satellite Acquisition</span>
+            <span>→</span>
+            <span>Quality Control (QA)</span>
+            <span>→</span>
+            <span>Resampling (UTM 44N)</span>
+            <span>→</span>
+            <span>Phenological Baseline</span>
+            <span>→</span>
+            <span>Calibrated Decision Support</span>
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -416,7 +446,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Farmer View: High-Contrast Actionable Status Card */}
+      {/* Farmer View: Evidence-Based Decision Support Alert (Rule 6) */}
       {persona === 'farmer' && (
         <div className="rounded-xl border border-emerald-200 bg-gradient-to-r from-emerald-50 to-teal-50 p-4 shadow-xs">
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -432,9 +462,9 @@ export default function Dashboard() {
                   ? '✓ Optimal Crop Vigor'
                   : (summary.ndvi?.mean ?? 0.5) >= 0.40
                     ? '⚠ Moderate Canopy Growth'
-                    : '🚨 Early Crop Stress Alert'}
+                    : '🟠 Potential Crop Stress Anomaly'}
               </span>
-              <span className="text-xs font-semibold text-slate-700">Sentinel-2 10m High-Resolution Diagnosis</span>
+              <span className="text-xs font-semibold text-slate-700">Near-Real-Time Decision Support</span>
             </div>
             <span className="text-xs text-slate-500">
               {analysisDate ? `Observation Date: ${analysisDate}` : 'Latest available capture'}
@@ -444,15 +474,15 @@ export default function Dashboard() {
           <div className="mt-2 text-sm text-slate-800">
             {(summary.ndvi?.mean ?? 0.5) >= 0.60 ? (
               <p>
-                <strong>Farmer Guidance:</strong> Field vegetation is actively photosynthesizing with balanced moisture. No premature chlorosis or thermal stress detected. Maintain scheduled agronomic practices.
+                <strong>Agronomic Guidance:</strong> Field vegetation demonstrates healthy canopy reflectance and normal moisture metrics for the current phenological growth stage. Maintain scheduled farm practices.
               </p>
             ) : (summary.ndvi?.mean ?? 0.5) >= 0.40 ? (
               <p>
-                <strong>Farmer Guidance:</strong> Canopy growth is moderate. Moisture levels are stable. Inspect lower leaves for minor nitrogen deficiency before next watering.
+                <strong>Agronomic Guidance:</strong> Canopy growth is moderate. Review red-edge (NDRE) and moisture indicators. Inspect field for subtle nutrient or moisture variations.
               </p>
             ) : (
               <p>
-                <strong>Urgent Action Required:</strong> Pre-cause stress detected (declining canopy moisture and red-edge absorption before visible wilting). Schedule supplemental irrigation within 24 to 48 hours.
+                <strong>Evidence-Based Alert:</strong> Vegetation indices show a persistent anomaly relative to the field baseline. Pattern is consistent with water or chlorophyll deficit. <em>Action: Verify root-zone soil moisture and crop condition before scheduling irrigation.</em>
               </p>
             )}
           </div>
@@ -464,7 +494,7 @@ export default function Dashboard() {
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-indigo-100 bg-indigo-50/50 p-3 text-xs">
           <div className="flex items-center gap-2">
             <span className="font-bold text-indigo-900">Research Publication Center:</span>
-            <span className="text-slate-600">Export 10m grid observation datasets with raw bands & indices</span>
+            <span className="text-slate-600">Export 10m grid observation datasets with raw bands, 20m resampled indices, and Landsat 30m LST</span>
           </div>
           <div className="flex items-center gap-2">
             <a
@@ -510,27 +540,31 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Summary cards */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+      {/* Summary cards with Resolution Provenance */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-6">
         <div className="rounded-lg border bg-white p-3">
-          <div className="text-xs font-medium text-gray-500">Grids</div>
+          <div className="text-xs font-medium text-gray-500">Analysis Grids (10m)</div>
           <div className="text-xl font-bold">{summary.grid_count}</div>
         </div>
         <div className="rounded-lg border bg-white p-3">
-          <div className="text-xs font-medium text-gray-500">NDVI (mean)</div>
+          <div className="text-xs font-medium text-gray-500">NDVI (10m Native)</div>
           <div className="text-xl font-bold">{summary.ndvi ? summary.ndvi.mean.toFixed(3) : '–'}</div>
         </div>
         <div className="rounded-lg border bg-white p-3">
-          <div className="text-xs font-medium text-gray-500">NDMI (mean)</div>
+          <div className="text-xs font-medium text-gray-500">NDMI (20m Resampled)</div>
           <div className="text-xl font-bold">{summary.ndmi ? summary.ndmi.mean.toFixed(3) : '–'}</div>
         </div>
         <div className="rounded-lg border bg-white p-3">
-          <div className="text-xs font-medium text-gray-500">LST (mean °C)</div>
-          <div className="text-xl font-bold">{summary.lst ? summary.lst.mean.toFixed(1) : '–'}</div>
+          <div className="text-xs font-medium text-gray-500">NDRE (20m Resampled)</div>
+          <div className="text-xl font-bold">{summary.ndre ? summary.ndre.mean.toFixed(3) : '–'}</div>
         </div>
         <div className="rounded-lg border bg-white p-3">
-          <div className="text-xs font-medium text-gray-500">Risk (mean)</div>
-          <div className="text-xl font-bold">{summary.risk ? summary.risk.mean.toFixed(3) : '–'}</div>
+          <div className="text-xs font-medium text-gray-500">Landsat LST (30m)</div>
+          <div className="text-xl font-bold">{summary.lst ? `${summary.lst.mean.toFixed(1)}°C` : '–'}</div>
+        </div>
+        <div className="rounded-lg border bg-white p-3">
+          <div className="text-xs font-medium text-gray-500">Stress Probability</div>
+          <div className="text-xl font-bold">{summary.risk ? `${(summary.risk.mean * 100).toFixed(1)}%` : '–'}</div>
         </div>
       </div>
 
@@ -566,17 +600,28 @@ export default function Dashboard() {
           <div className="lg:col-span-2">
             <div className="rounded-lg border overflow-hidden">
               <div className="flex flex-wrap gap-1 bg-slate-100 p-2">
-                {(['ndvi', 'ndmi', 'ndre', 'evi', 'savi', 'gci', 'lst', 'risk'] as ColorMode[]).map(m => (
+                {[
+                  { id: 'ndvi', label: 'NDVI (10m)' },
+                  { id: 'ndmi', label: 'NDMI (20m)' },
+                  { id: 'ndre', label: 'NDRE (20m)' },
+                  { id: 'evi', label: 'EVI (10m)' },
+                  { id: 'savi', label: 'SAVI (10m)' },
+                  { id: 'gci', label: 'GCI (20m)' },
+                  { id: 'lst', label: 'Landsat LST (30m)' },
+                  { id: 'sar', label: 'SAR (10m)' },
+                  { id: 'stress_prob', label: 'Stress Prob' },
+                  { id: 'uncertainty', label: 'QA / Uncertainty' },
+                ].map(item => (
                   <button
-                    key={m}
-                    className={`rounded px-2.5 py-1 text-xs font-bold uppercase transition ${
-                      colorMode === m
+                    key={item.id}
+                    className={`rounded px-2.5 py-1 text-xs font-bold transition ${
+                      colorMode === item.id
                         ? 'bg-emerald-600 text-white shadow-xs'
                         : 'bg-white text-slate-700 hover:bg-slate-200'
                     }`}
-                    onClick={() => setColorMode(m)}
+                    onClick={() => setColorMode(item.id as ColorMode)}
                   >
-                    {m}
+                    {item.label}
                   </button>
                 ))}
               </div>
@@ -629,11 +674,8 @@ export default function Dashboard() {
             </div>
 
             <ScientificLegend
-              ndvi={summary.ndvi?.mean ?? null}
-              ndmi={summary.ndmi?.mean ?? null}
-              lst={summary.lst?.mean ?? null}
-              risk={summary.risk?.mean ?? null}
-              colorScales={data.color_scales}
+              activeIndex={colorMode}
+              onOpenTraceability={setTraceModalKey}
             />
           </div>
 
