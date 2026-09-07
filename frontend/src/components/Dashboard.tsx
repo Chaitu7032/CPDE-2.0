@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { GeoJSON, MapContainer, TileLayer } from 'react-leaflet'
+import { GeoJSON, MapContainer, TileLayer, useMap } from 'react-leaflet'
+import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import axios from 'axios'
 import ScientificLegend, { getColorForValue } from './ScientificLegend'
@@ -11,6 +12,23 @@ import EvidencePanel from './EvidencePanel'
 import ValidationPanel from './ValidationPanel'
 import MethodologyPanel from './MethodologyPanel'
 import TemporalAnalysisPanel from './TemporalAnalysisPanel'
+
+function AutoFitMapBounds({ geometry, triggerCount }: { geometry: any; triggerCount?: number }) {
+  const map = useMap()
+  useEffect(() => {
+    if (!geometry) return
+    try {
+      const layer = L.geoJSON(geometry)
+      const bounds = layer.getBounds()
+      if (bounds.isValid()) {
+        map.flyToBounds(bounds, { padding: [35, 35], maxZoom: 18, duration: 1.0 })
+      }
+    } catch (e) {
+      console.warn('AutoFitMapBounds error:', e)
+    }
+  }, [geometry, map, triggerCount])
+  return null
+}
 import {
   BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line, Legend,
@@ -105,6 +123,7 @@ type DashboardData = {
 }
 
 type ColorMode = 'ndvi' | 'ndmi' | 'ndre' | 'evi' | 'savi' | 'gci' | 'lst' | 'sar' | 'stress_prob' | 'uncertainty' | 'risk'
+type BasemapKey = 's2-tci' | 'google-hybrid' | 'esri'
 type Persona = 'farmer' | 'researcher'
 type DashboardTab = 'dashboard' | 'grid-inspector' | 'evidence' | 'validation' | 'methodology' | 'available-data' | 'temporal-analysis'
 
@@ -166,6 +185,9 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<DashboardTab>('dashboard')
   const [colorMode, setColorMode] = useState<ColorMode>('ndvi')
+  const [basemap, setBasemap] = useState<BasemapKey>('s2-tci')
+  const [gridOpacity, setGridOpacity] = useState<number>(0.72)
+  const [recenterCount, setRecenterCount] = useState<number>(0)
   const [persona, setPersona] = useState<Persona>('farmer')
   const [traceModalKey, setTraceModalKey] = useState<string | null>(null)
   const [pollCount, setPollCount] = useState(0)
@@ -277,14 +299,14 @@ export default function Dashboard() {
     }
 
     if (isHovered) {
-      return { weight: 2.5, fillOpacity: 0.8, color: '#333', fillColor }
+      return { weight: 2.5, fillOpacity: Math.min(1.0, gridOpacity + 0.2), color: '#fbbf24', fillColor }
     }
     if (isSelected) {
-      return { weight: 2.5, fillOpacity: 0.78, color: '#333', fillColor }
+      return { weight: 2.5, fillOpacity: Math.min(1.0, gridOpacity + 0.15), color: '#ffffff', fillColor }
     }
 
-    return { weight: 1, fillOpacity: 0.68, color: '#333', fillColor }
-  }, [colorMode, hoveredGridId, selectedGridId])
+    return { weight: 0.8, fillOpacity: gridOpacity, color: '#334155', fillColor }
+  }, [colorMode, hoveredGridId, selectedGridId, gridOpacity])
 
   const gridChartData = useMemo(() => {
     if (!data?.grids?.features) return []
@@ -387,6 +409,7 @@ export default function Dashboard() {
   const latestWeather = weather && weather.length > 0 ? weather[weather.length - 1] : null
   const latestT2m = (typeof latestWeather?.t2m === 'number' && Number.isFinite(latestWeather.t2m)) ? latestWeather.t2m : null
   const analysisDate = active_data_date || latest_complete_date || latest_date
+  const stacItemId = data?.provenance?.stac_item_id || data?.grids?.features?.[0]?.properties?.stac_item_id || null
 
   return (
     <div className="space-y-4">
@@ -598,8 +621,9 @@ export default function Dashboard() {
       {activeTab === 'dashboard' && (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
           <div className="lg:col-span-2">
-            <div className="rounded-lg border overflow-hidden">
-              <div className="flex flex-wrap gap-1 bg-slate-100 p-2">
+            <div className="rounded-lg border overflow-hidden bg-white shadow-xs">
+              {/* Scientific Metric Switcher */}
+              <div className="flex flex-wrap gap-1 bg-slate-100 p-2 border-b">
                 {[
                   { id: 'ndvi', label: 'NDVI (10m)' },
                   { id: 'ndmi', label: 'NDMI (20m)' },
@@ -625,21 +649,115 @@ export default function Dashboard() {
                   </button>
                 ))}
               </div>
+
+              {/* Basemap & Opacity Toolbar */}
+              <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-50 px-3 py-2 border-b text-xs">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="font-semibold text-slate-700">Basemap:</span>
+                  {[
+                    { id: 's2-tci', label: '🛰️ Sentinel-2 True Color (Real-Time)', desc: 'Actual satellite optical pass matching date' },
+                    { id: 'google-hybrid', label: '🌍 Google Hybrid (0.3m)', desc: 'High-res aerial with field bunds' },
+                    { id: 'esri', label: '🗺️ Esri Satellite', desc: 'Global aerial imagery' },
+                  ].map(b => (
+                    <button
+                      key={b.id}
+                      type="button"
+                      title={b.desc}
+                      onClick={() => setBasemap(b.id as BasemapKey)}
+                      className={`rounded-md px-2 py-1 text-[11px] font-medium transition ${
+                        basemap === b.id
+                          ? 'bg-indigo-600 text-white shadow-xs'
+                          : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      {b.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setRecenterCount((c) => c + 1)}
+                    className="flex items-center gap-1.5 rounded-md bg-emerald-700 px-2.5 py-1 text-[11px] font-bold text-white shadow-xs hover:bg-emerald-800 transition"
+                    title="Fly map directly back to your registered field"
+                  >
+                    🎯 Locate My Field
+                  </button>
+
+                  <div className="flex items-center gap-2 border-l pl-3 border-slate-200">
+                    <span className="font-medium text-slate-600 text-[11px]">Grid Opacity:</span>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      value={Math.round(gridOpacity * 100)}
+                      onChange={(e) => setGridOpacity(Number(e.target.value) / 100)}
+                      className="h-1.5 w-20 cursor-pointer accent-emerald-600"
+                      title="Slide to fade between 10m stress grid and raw satellite photograph"
+                    />
+                    <span className="font-mono text-[11px] text-slate-700 w-8">{Math.round(gridOpacity * 100)}%</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* STAC / Scene Real-Time Info Badge */}
+              {basemap === 's2-tci' && (
+                <div className="flex items-center justify-between bg-emerald-50/80 px-3 py-1 border-b text-[11px] text-emerald-800">
+                  <div className="flex items-center gap-1.5">
+                    <span className="h-2 w-2 rounded-full bg-emerald-500 animate-ping" />
+                    <span><strong>Active Optical Pass:</strong> {analysisDate || 'Latest'} Sentinel-2 L2A (10 m Native RGB)</span>
+                  </div>
+                  {stacItemId && (
+                    <span className="font-mono text-[10px] text-emerald-700 truncate max-w-xs" title={stacItemId}>
+                      Scene: {stacItemId}
+                    </span>
+                  )}
+                </div>
+              )}
+
               <div style={{ height: '55vh' }}>
                 <MapContainer center={mapCenter} zoom={16} style={{ height: '100%', width: '100%' }}>
-                  <TileLayer
-                    url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-                    attribution="Tiles &copy; Esri"
-                  />
+                  <AutoFitMapBounds geometry={land.geometry} triggerCount={recenterCount} />
+
+                  {basemap === 's2-tci' && (
+                    <TileLayer
+                      key={`s2-tci-${stacItemId || analysisDate || 'default'}`}
+                      url={
+                        stacItemId
+                          ? `https://planetarycomputer.microsoft.com/api/data/v1/item/tiles/WebMercatorQuad/{z}/{x}/{y}@2x?collection=sentinel-2-l2a&item=${stacItemId}&assets=visual`
+                          : "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/g/{z}/{y}/{x}.jpg"
+                      }
+                      attribution="&copy; Copernicus Sentinel-2 L2A True Color (Real-Time Overpass)"
+                      maxZoom={19}
+                    />
+                  )}
+                  {basemap === 'google-hybrid' && (
+                    <TileLayer
+                      key="google-hybrid"
+                      url="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}"
+                      attribution="&copy; Google Maps Satellite + Labels"
+                      maxZoom={20}
+                    />
+                  )}
+                  {basemap === 'esri' && (
+                    <TileLayer
+                      key="esri"
+                      url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+                      attribution="Tiles &copy; Esri World Imagery"
+                      maxZoom={19}
+                    />
+                  )}
+
                   {land.geometry && (
                     <GeoJSON
                       data={{ type: 'Feature', properties: {}, geometry: land.geometry } as any}
-                      style={() => ({ weight: 2, fillOpacity: 0.05, color: '#fff' })}
+                      style={() => ({ weight: 2.5, fillOpacity: 0.0, color: '#ffffff', dashArray: '4, 4' })}
                     />
                   )}
                   {data.grids && data.grids.features.length > 0 && (
                     <GeoJSON
-                      key={`${colorMode}-${latestWeather?.date ?? 'no-weather'}`}
+                      key={`${colorMode}-${latestWeather?.date ?? 'no-weather'}-${gridOpacity}`}
                       data={data.grids as any}
                       style={getGridStyle}
                       onEachFeature={(feature, layer) => {
@@ -661,9 +779,10 @@ export default function Dashboard() {
                           p.is_water ? 'Water' : '',
                           p.ndvi != null ? `NDVI: ${p.ndvi.toFixed(3)}` : '',
                           p.ndmi != null ? `NDMI: ${p.ndmi.toFixed(3)}` : '',
+                          p.ndre != null ? `NDRE: ${p.ndre.toFixed(3)}` : '',
                           p.lst_c != null ? `LST: ${p.lst_c.toFixed(1)}°C` : '',
                           latestT2m != null ? `Temp: ${latestT2m.toFixed(1)}°C` : '',
-                          p.risk != null ? `Risk: ${(p.risk * 100).toFixed(1)}%` : '',
+                          p.risk != null ? `Stress Prob: ${(p.risk * 100).toFixed(1)}%` : '',
                         ].filter(Boolean)
                         layer.bindPopup(lines.join('<br/>'))
                       }}
